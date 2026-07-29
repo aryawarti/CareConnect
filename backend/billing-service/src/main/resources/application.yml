@@ -1,0 +1,8 @@
+spring:
+  application:
+    name: billing-service
+  config:
+    import: "optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}"
+
+server:
+  port: 8086

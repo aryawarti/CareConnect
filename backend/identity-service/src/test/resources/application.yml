@@ -1,0 +1,20 @@
+# Test-classpath application.yml shadows the main one: tests are HERMETIC.
+# Cloud infrastructure is explicitly disabled — spring-cloud-starter-config
+# fails fast ("No spring.config.import set") if it's on the classpath and
+# neither an import nor `enabled: false` is present.
+spring:
+  application:
+    name: identity-service
+  cloud:
+    config:
+      enabled: false
+
+eureka:
+  client:
+    enabled: false
+
+careconnect:
+  jwt:
+    secret: test-secret-key-that-is-long-enough-for-hs256!!
+    access-ttl-minutes: 15
+    refresh-ttl-days: 7

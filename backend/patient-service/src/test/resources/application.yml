@@ -1,0 +1,17 @@
+# Hermetic test config (Phase 2 lesson): cloud infra off, no environment leakage.
+spring:
+  application:
+    name: patient-service
+  cloud:
+    config:
+      enabled: false
+  kafka:
+    producer:
+      properties:
+        # No broker in most test contexts: fail publishes fast instead of
+        # blocking 60s on metadata (publisher logs and continues by design).
+        max.block.ms: 500
+
+eureka:
+  client:
+    enabled: false

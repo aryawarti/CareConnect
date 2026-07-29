@@ -1,0 +1,397 @@
+# CareConnect local stack. Infra always starts; application services are in the
+# "platform" profile: docker compose --profile platform up -d --build
+name: careconnect
+
+x-service-env: &service-env
+  CONFIG_SERVER_URL: http://config-server:8888
+  EUREKA_URL: http://discovery-server:8761/eureka
+  # Local dev on a laptop runs ~10 JVMs at once. C1-only JIT cuts startup
+  # dramatically (peak throughput is irrelevant here), and capping heap per
+  # service stops the containers collectively exhausting Docker's memory.
+  JAVA_TOOL_OPTIONS: >-
+    -XX:TieredStopAtLevel=1
+    -XX:MaxRAMPercentage=40
+    -Xss512k
+    -Djava.security.egd=file:/dev/./urandom
+
+x-db-env: &db-env
+  POSTGRES_HOST: postgres
+  POSTGRES_USER: ${POSTGRES_USER:-careconnect}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-careconnect}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: careconnect-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-careconnect}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-careconnect}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-careconnect}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: careconnect-kafka
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:19092,CONTROLLER://:9093,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  config-server:
+    build:
+      context: ./backend
+      dockerfile: config-server/Dockerfile
+    container_name: careconnect-config-server
+    mem_limit: 512m
+    profiles: ["platform"]
+    ports:
+      - "8888:8888"
+    environment:
+      EUREKA_URL: http://discovery-server:8761/eureka
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8888/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 150s
+
+  discovery-server:
+    build:
+      context: ./backend
+      dockerfile: discovery-server/Dockerfile
+    container_name: careconnect-discovery-server
+    mem_limit: 512m
+    profiles: ["platform"]
+    ports:
+      - "8761:8761"
+    environment:
+      CONFIG_SERVER_URL: http://config-server:8888
+    depends_on:
+      config-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8761/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 150s
+
+  api-gateway:
+    build:
+      context: ./backend
+      dockerfile: api-gateway/Dockerfile
+    container_name: careconnect-api-gateway
+    mem_limit: 512m
+    profiles: ["platform"]
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *service-env
+      JWT_SECRET: ${JWT_SECRET:-careconnect-local-dev-secret-key-please-override-1234}
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 150s
+
+  identity-service:
+    build:
+      context: ./backend
+      dockerfile: identity-service/Dockerfile
+    container_name: careconnect-identity-service
+    mem_limit: 640m
+    profiles: ["platform"]
+    ports:
+      - "8081:8081"
+    environment:
+      <<: [*service-env, *db-env]
+      JWT_SECRET: ${JWT_SECRET:-careconnect-local-dev-secret-key-please-override-1234}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@careconnect.local}
+      # Local dev: an admin must always exist, or nobody can hire doctors and the
+      # whole clinic stays empty. Override in .env for anything non-local.
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-Admin12345}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 210s
+
+  patient-service:
+    build:
+      context: ./backend
+      dockerfile: patient-service/Dockerfile
+    container_name: careconnect-patient-service
+    mem_limit: 640m
+    profiles: ["platform"]
+    ports:
+      - "8082:8082"
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 210s
+
+  provider-service:
+    build:
+      context: ./backend
+      dockerfile: provider-service/Dockerfile
+    container_name: careconnect-provider-service
+    mem_limit: 640m
+    profiles: ["platform"]
+    ports:
+      - "8083:8083"
+    environment:
+      <<: [*service-env, *db-env]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8083/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 210s
+
+  appointment-service:
+    build:
+      context: ./backend
+      dockerfile: appointment-service/Dockerfile
+    container_name: careconnect-appointment-service
+    mem_limit: 640m
+    profiles: ["platform"]
+    ports:
+      - "8084:8084"
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8084/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 210s
+
+  notification-service:
+    build:
+      context: ./backend
+      dockerfile: notification-service/Dockerfile
+    container_name: careconnect-notification-service
+    mem_limit: 640m
+    profiles: ["platform"]
+    ports:
+      - "8087:8087"
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8087/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 210s
+
+  medical-record-service:
+    build:
+      context: ./backend
+      dockerfile: medical-record-service/Dockerfile
+    container_name: careconnect-medical-record-service
+    mem_limit: 640m
+    profiles: ["platform"]
+    ports:
+      - "8085:8085"
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8085/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 210s
+
+  billing-service:
+    build:
+      context: ./backend
+      dockerfile: billing-service/Dockerfile
+    container_name: careconnect-billing-service
+    mem_limit: 640m
+    profiles: ["platform"]
+    ports:
+      - "8086:8086"
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8086/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 210s
+
+
+  # One-shot demo seeder: populates a realistic clinic through the public API
+  # (so events fire and records/invoices are produced by the system itself).
+  # Idempotent — safe to re-run; exits immediately if already seeded.
+  #   docker compose --profile platform --profile demo up -d
+  queue-service:
+    build:
+      context: ./backend
+      dockerfile: queue-service/Dockerfile
+    container_name: careconnect-queue-service
+    mem_limit: 640m
+    profiles: ["platform"]
+    ports:
+      - "8088:8088"
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8088/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 210s
+
+
+  # One-shot demo seeder: populates a realistic clinic through the public API
+  # (so events fire and records/invoices are produced by the system itself).
+  # Idempotent — safe to re-run; exits immediately if already seeded.
+  #   docker compose --profile platform --profile demo up -d
+  laboratory-service:
+    build:
+      context: ./backend
+      dockerfile: laboratory-service/Dockerfile
+    container_name: careconnect-laboratory-service
+    mem_limit: 640m
+    profiles: ["platform"]
+    ports:
+      - "8089:8089"
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8089/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 210s
+
+
+  # One-shot demo seeder: populates a realistic clinic through the public API
+  # (so events fire and records/invoices are produced by the system itself).
+  # Idempotent — safe to re-run; exits immediately if already seeded.
+  #   docker compose --profile platform --profile demo up -d
+  seeder:
+    image: python:3.12-alpine
+    container_name: careconnect-seeder
+    profiles: ["platform"]
+    restart: "no"
+    environment:
+      GATEWAY_URL: http://api-gateway:8080
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@careconnect.local}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-Admin12345}
+    volumes:
+      - ./infra/seed:/seed:ro
+    command: ["python", "/seed/seed.py"]
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: careconnect-frontend
+    profiles: ["platform"]
+    ports:
+      - "4300:80"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  kafka-data:

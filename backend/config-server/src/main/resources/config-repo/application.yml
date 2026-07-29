@@ -1,0 +1,43 @@
+# Shared defaults for ALL CareConnect services (lowest precedence; service files override).
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka}
+    # Dev: 10s (not the 30s prod default) so new instances are routable fast.
+    # NOTE: this value is ALSO the Eureka cache-refresh task timeout — set it
+    # too low (we tried 5s) and a cold, loaded machine produces constant
+    # TimedSupervisorTask timeouts, which drag the health aggregate DOWN.
+    registry-fetch-interval-seconds: 10
+    eureka-service-url-poll-interval-seconds: 30
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 10
+    lease-expiration-duration-in-seconds: 30
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      # Readiness = "can this instance serve traffic" — what container
+      # healthchecks should ask. Deliberately excludes discovery/downstream
+      # indicators: a flaky dependency must not make a healthy instance look
+      # dead and cascade failures across the stack.
+      group:
+        readiness:
+          include: readinessState
+        liveness:
+          include: livenessState
+
+logging:
+  pattern:
+    # correlationId comes from platform-starter's CorrelationIdFilter (MDC).
+    # One user action -> one id -> greppable across every service it touched.
+    level: "%5p [${spring.application.name:},%X{correlationId:-}]"
+
+# Feign propagates the correlation header on service-to-service calls
+# (appointment-service FeignConfig); Kafka events carry it in the envelope.

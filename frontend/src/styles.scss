@@ -1,0 +1,338 @@
+@use '@angular/material/prebuilt-themes/azure-blue.css';
+
+/* =========================================================================
+   CareConnect design system
+   A small set of tokens + utilities so components stop carrying inline
+   styles. Healthcare palette: deep teal (trust/clinical), warm amber for
+   money, restrained neutrals so clinical data stays the loudest thing on
+   the page.
+   ========================================================================= */
+
+:root {
+  --cc-primary: #0f766e;
+  --cc-primary-dark: #115e59;
+  --cc-primary-light: #ccfbf1;
+  --cc-accent: #b45309;
+  --cc-accent-light: #fef3c7;
+
+  --cc-ink: #0f172a;
+  --cc-ink-soft: #475569;
+  --cc-ink-faint: #94a3b8;
+  --cc-line: #e2e8f0;
+  --cc-surface: #ffffff;
+  --cc-canvas: #f6f8fa;
+
+  --cc-ok: #15803d;
+  --cc-ok-bg: #dcfce7;
+  --cc-warn: #b45309;
+  --cc-warn-bg: #fef3c7;
+  --cc-danger: #b91c1c;
+  --cc-danger-bg: #fee2e2;
+  --cc-info-bg: #e0f2fe;
+  --cc-info: #0369a1;
+
+  --cc-radius: 14px;
+  --cc-radius-sm: 10px;
+  --cc-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.06);
+  --cc-shadow-hover: 0 2px 4px rgba(15, 23, 42, 0.06), 0 12px 32px rgba(15, 23, 42, 0.10);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--cc-canvas);
+  color: var(--cc-ink);
+  font-family: Roboto, "Segoe UI", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 { color: var(--cc-ink); margin: 0 0 4px; letter-spacing: -0.01em; }
+h1 { font-size: 30px; font-weight: 600; }
+h2 { font-size: 22px; font-weight: 600; }
+h3 { font-size: 17px; font-weight: 600; }
+h4 { font-size: 14px; font-weight: 600; text-transform: uppercase;
+     letter-spacing: 0.06em; color: var(--cc-ink-soft); margin-top: 24px; }
+
+.material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+
+/* ---- App shell ---------------------------------------------------------- */
+
+mat-toolbar.cc-toolbar {
+  background: var(--cc-surface);
+  color: var(--cc-ink);
+  border-bottom: 1px solid var(--cc-line);
+  height: 62px;
+  padding: 0 20px;
+  gap: 2px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+
+  .cc-brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-weight: 650;
+    font-size: 19px;
+    letter-spacing: -0.02em;
+    color: var(--cc-primary-dark);
+    text-decoration: none;
+
+    mat-icon { color: var(--cc-primary); }
+  }
+
+  a[mat-button] {
+    color: var(--cc-ink-soft);
+    font-weight: 500;
+    border-radius: 9px;
+
+    mat-icon { color: var(--cc-ink-faint); margin-right: 4px; }
+
+    &:hover { background: var(--cc-primary-light); color: var(--cc-primary-dark); }
+    &.active, &.router-link-active {
+      background: var(--cc-primary-light);
+      color: var(--cc-primary-dark);
+      mat-icon { color: var(--cc-primary); }
+    }
+  }
+
+  .cc-user {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 12px;
+    margin-left: 6px;
+    border-left: 1px solid var(--cc-line);
+    font-size: 13px;
+    color: var(--cc-ink-soft);
+  }
+}
+
+.cc-page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px 20px 64px;
+}
+
+.cc-page-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 22px;
+
+  .cc-sub { color: var(--cc-ink-soft); font-size: 14px; margin-top: 2px; }
+  .cc-spacer { flex: 1; }
+}
+
+.cc-auth-card { max-width: 420px; margin: 56px auto; }
+.cc-full-width { width: 100%; }
+.cc-narrow { max-width: 760px; }
+
+/* ---- Surfaces ----------------------------------------------------------- */
+
+.cc-card {
+  background: var(--cc-surface);
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-radius);
+  box-shadow: var(--cc-shadow);
+  padding: 20px;
+}
+
+.cc-card-tight { padding: 14px 16px; }
+
+mat-card {
+  border-radius: var(--cc-radius) !important;
+  border: 1px solid var(--cc-line) !important;
+  box-shadow: var(--cc-shadow) !important;
+  margin-bottom: 16px;
+}
+
+/* ---- Grids -------------------------------------------------------------- */
+
+.cc-grid { display: grid; gap: 16px; }
+.cc-grid-2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.cc-grid-3 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.cc-grid-4 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.cc-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.cc-stack { display: flex; flex-direction: column; gap: 10px; }
+
+/* ---- Stat tiles --------------------------------------------------------- */
+
+.cc-stat {
+  background: var(--cc-surface);
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-radius);
+  box-shadow: var(--cc-shadow);
+  padding: 18px 18px 16px;
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  transition: box-shadow .15s ease, transform .15s ease;
+
+  &:hover { box-shadow: var(--cc-shadow-hover); transform: translateY(-1px); }
+
+  .cc-stat-icon {
+    width: 42px; height: 42px; flex: none;
+    display: grid; place-items: center;
+    border-radius: 12px;
+    background: var(--cc-primary-light);
+    color: var(--cc-primary-dark);
+  }
+  .cc-stat-value { font-size: 27px; font-weight: 650; line-height: 1.1; letter-spacing: -0.02em; }
+  .cc-stat-label { font-size: 13px; color: var(--cc-ink-soft); margin-top: 3px; }
+  .cc-stat-hint { font-size: 12px; color: var(--cc-ink-faint); margin-top: 6px; }
+
+  &.accent .cc-stat-icon { background: var(--cc-accent-light); color: var(--cc-accent); }
+  &.ok .cc-stat-icon { background: var(--cc-ok-bg); color: var(--cc-ok); }
+  &.info .cc-stat-icon { background: var(--cc-info-bg); color: var(--cc-info); }
+}
+
+/* ---- Status pills ------------------------------------------------------- */
+
+.cc-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--cc-line);
+  color: var(--cc-ink-soft);
+  white-space: nowrap;
+
+  &.ok, &.PAID, &.COMPLETED, &.CONFIRMED, &.ACTIVE, &.SIGNED, &.VERIFIED {
+    background: var(--cc-ok-bg); color: var(--cc-ok);
+  }
+  &.warn, &.ISSUED, &.REQUESTED, &.OPEN, &.COLLECTED, &.REPORTED {
+    background: var(--cc-warn-bg); color: var(--cc-warn);
+  }
+  &.danger, &.CANCELLED, &.NO_SHOW, &.VOID, &.INACTIVE, &.REJECTED, &.CRITICAL {
+    background: var(--cc-danger-bg); color: var(--cc-danger);
+  }
+  &.AMENDED, &.IN_PROCESS, &.ORDERED { background: var(--cc-info-bg); color: var(--cc-info); }
+}
+
+/* ---- Tables ------------------------------------------------------------- */
+
+.cc-table-wrap {
+  background: var(--cc-surface);
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-radius);
+  box-shadow: var(--cc-shadow);
+  overflow: hidden;
+}
+
+table.mat-mdc-table {
+  width: 100%;
+  background: transparent;
+
+  .mat-mdc-header-row { background: #f8fafc; height: 46px; }
+  .mat-mdc-header-cell {
+    font-weight: 600; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--cc-ink-soft); border-bottom-color: var(--cc-line);
+  }
+  .mat-mdc-row { height: 56px; transition: background .12s ease; }
+  .mat-mdc-row:hover { background: #f8fafc; }
+  .mat-mdc-cell { border-bottom-color: var(--cc-line); color: var(--cc-ink); font-size: 14px; }
+}
+
+/* ---- Empty states (tell people what to do next) ------------------------- */
+
+.cc-empty {
+  text-align: center;
+  padding: 46px 24px;
+  background: var(--cc-surface);
+  border: 1px dashed var(--cc-line);
+  border-radius: var(--cc-radius);
+
+  mat-icon {
+    font-size: 42px; width: 42px; height: 42px;
+    color: var(--cc-ink-faint); margin-bottom: 10px;
+  }
+  .cc-empty-title { font-weight: 600; font-size: 16px; }
+  .cc-empty-text { color: var(--cc-ink-soft); font-size: 14px; margin: 6px auto 16px; max-width: 460px; }
+}
+
+/* ---- Timeline (visit history, day schedule) ----------------------------- */
+
+.cc-timeline { position: relative; padding-left: 26px; }
+.cc-timeline::before {
+  content: ''; position: absolute; left: 8px; top: 6px; bottom: 6px;
+  width: 2px; background: var(--cc-line);
+}
+.cc-timeline-item { position: relative; padding: 0 0 18px 0; }
+.cc-timeline-item::before {
+  content: ''; position: absolute; left: -22px; top: 6px;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--cc-primary); box-shadow: 0 0 0 3px var(--cc-primary-light);
+}
+
+/* ---- Buttons ------------------------------------------------------------ */
+
+.mat-mdc-raised-button, .mat-mdc-unelevated-button, .mat-mdc-outlined-button,
+.mat-mdc-button { border-radius: 10px !important; letter-spacing: 0 !important; }
+
+.cc-btn-primary.mat-mdc-unelevated-button {
+  background: var(--cc-primary) !important;
+  color: #fff !important;
+  &:hover { background: var(--cc-primary-dark) !important; }
+}
+
+a[mat-button] mat-icon, a[mat-flat-button] mat-icon, a[mat-stroked-button] mat-icon,
+button[mat-button] mat-icon, button[mat-flat-button] mat-icon, button[mat-stroked-button] mat-icon {
+  margin-right: 5px; vertical-align: middle;
+  font-size: 19px; width: 19px; height: 19px;
+}
+
+/* ---- Forms -------------------------------------------------------------- */
+
+.mat-mdc-form-field { width: 100%; }
+.cc-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 4px 18px; }
+.cc-form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+
+/* ---- Misc --------------------------------------------------------------- */
+
+.cc-muted { color: var(--cc-ink-soft); }
+.cc-faint { color: var(--cc-ink-faint); font-size: 13px; }
+.cc-mono { font-variant-numeric: tabular-nums; }
+.cc-money { font-variant-numeric: tabular-nums; font-weight: 600; }
+.cc-divider { height: 1px; background: var(--cc-line); margin: 18px 0; }
+
+@media (max-width: 900px) {
+  mat-toolbar.cc-toolbar a[mat-button] .mdc-button__label { display: none; }
+  mat-toolbar.cc-toolbar a[mat-button] mat-icon { margin-right: 0; }
+  .cc-page { padding: 18px 14px 48px; }
+}
+
+/* ---- Alerts & status feedback ------------------------------------------ */
+
+/* Inline alert used on forms for business/validation problems (4xx). Sits
+   next to the action that caused it, unlike the global toast for system
+   errors. Colour follows the design-system tokens. */
+.cc-alert {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 11px 14px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  border: 1px solid transparent;
+
+  mat-icon { flex: none; font-size: 20px; height: 20px; width: 20px; }
+}
+.cc-alert-error   { background: var(--cc-danger-bg); color: var(--cc-danger); border-color: color-mix(in srgb, var(--cc-danger) 25%, transparent); }
+.cc-alert-warn    { background: var(--cc-warn-bg);   color: var(--cc-warn);   border-color: color-mix(in srgb, var(--cc-warn) 25%, transparent); }
+.cc-alert-success { background: var(--cc-ok-bg);     color: var(--cc-ok);     border-color: color-mix(in srgb, var(--cc-ok) 25%, transparent); }
+.cc-alert-info    { background: var(--cc-info-bg);   color: var(--cc-info);   border-color: color-mix(in srgb, var(--cc-info) 25%, transparent); }
+
+/* Global toast for system errors (network / 5xx / service warming up). */
+.cc-snack-error {
+  --mdc-snackbar-container-color: #2b1416;
+  --mdc-snackbar-supporting-text-color: #ffdad6;
+  --mat-snack-bar-button-color: #ffb4ab;
+}

@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: api-gateway
+  config:
+    import: "optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}"
+
+# Canonical gateway config (routes, CORS, default-filters) lives in the
+# config-repo (api-gateway.yml) — single source of truth. Only bootstrap
+# concerns belong in this file.
+server:
+  port: 8080
+
+# Fallbacks for running without config-server (tests, cold start). The
+# config-repo values are canonical and override these when available.
+careconnect:
+  jwt:
+    secret: ${JWT_SECRET:careconnect-local-dev-secret-key-please-override-1234}
+  gateway:
+    public-paths: /api/auth/register,/api/auth/login,/api/auth/refresh,/api/auth/logout,/api/providers/directory/**,/api/providers/departments,/api/queue/stream/**,/api/queue/board/**,/api/_platform/**

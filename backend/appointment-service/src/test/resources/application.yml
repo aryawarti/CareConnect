@@ -1,0 +1,19 @@
+# Hermetic test config: cloud infra off, no environment leakage.
+spring:
+  application:
+    name: appointment-service
+  cloud:
+    config:
+      enabled: false
+  kafka:
+    producer:
+      properties:
+        max.block.ms: 500
+
+eureka:
+  client:
+    enabled: false
+
+careconnect:
+  clinic:
+    zone: Asia/Kolkata

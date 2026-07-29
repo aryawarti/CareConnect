@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: discovery-server
+  config:
+    # optional: local runs still work if config-server is down; the settings
+    # below and config-repo defaults keep behavior identical either way.
+    import: "optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}"
+
+server:
+  port: 8761
+
+eureka:
+  client:
+    register-with-eureka: false
+    fetch-registry: false

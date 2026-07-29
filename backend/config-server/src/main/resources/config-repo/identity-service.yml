@@ -1,0 +1,24 @@
+server:
+  port: 8081
+
+spring:
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/careconnect_identity
+    username: ${POSTGRES_USER:careconnect}
+    password: ${POSTGRES_PASSWORD:careconnect}
+  jpa:
+    hibernate:
+      ddl-auto: validate      # Flyway owns the schema (ADR-008)
+    open-in-view: false        # no lazy-loading from the web layer; explicit fetching only
+  flyway:
+    enabled: true
+
+careconnect:
+  jwt:
+    # HS256 needs >= 32 bytes. The default is for local dev only; real runs set JWT_SECRET.
+    secret: ${JWT_SECRET:careconnect-local-dev-secret-key-please-override-1234}
+    access-ttl-minutes: ${JWT_ACCESS_TTL_MINUTES:15}
+    refresh-ttl-days: ${JWT_REFRESH_TTL_DAYS:7}
+  seed:
+    admin-email: ${SEED_ADMIN_EMAIL:admin@careconnect.local}
+    admin-password: ${SEED_ADMIN_PASSWORD:}

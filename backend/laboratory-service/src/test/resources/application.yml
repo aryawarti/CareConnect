@@ -1,0 +1,14 @@
+spring:
+  application:
+    name: laboratory-service
+  cloud:
+    config:
+      enabled: false
+  kafka:
+    producer:
+      properties:
+        max.block.ms: 500
+
+eureka:
+  client:
+    enabled: false

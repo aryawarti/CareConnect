@@ -1,0 +1,11 @@
+# Hermetic test config (Phase 2 lesson): cloud infra off, no environment leakage.
+spring:
+  application:
+    name: provider-service
+  cloud:
+    config:
+      enabled: false
+
+eureka:
+  client:
+    enabled: false

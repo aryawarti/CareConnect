@@ -1,0 +1,93 @@
+server:
+  port: 8080
+
+spring:
+  cloud:
+    gateway:
+      # Explicit routes only — the discovery locator (auto-route every registered
+      # service) is convenient but exposes services by accident. Routes are a
+      # security surface; we declare them (see docs/architecture/security.md).
+      discovery:
+        locator:
+          enabled: false
+      # NOTE: inbound X-User-* headers are stripped inside JwtAuthGlobalFilter,
+      # NOT via `default-filters: RemoveRequestHeader=...`. Route-level filters
+      # run *after* global filters, so a RemoveRequestHeader here would delete
+      # the identity headers the JWT filter had just set — every authenticated
+      # request then reached services with no identity and 401'd.
+      # (Bug found in Phase 8; see docs/operations/troubleshooting.md.)
+      routes:
+        - id: identity
+          uri: lb://identity-service
+          predicates:
+            - Path=/api/auth/**,/api/users/**
+        - id: patient
+          uri: lb://patient-service
+          predicates:
+            - Path=/api/patients/**
+        - id: provider
+          uri: lb://provider-service
+          predicates:
+            - Path=/api/providers/**
+        - id: appointment
+          uri: lb://appointment-service
+          predicates:
+            - Path=/api/appointments/**
+        - id: medical-record
+          uri: lb://medical-record-service
+          predicates:
+            - Path=/api/records/**
+        - id: billing
+          uri: lb://billing-service
+          predicates:
+            - Path=/api/invoices/**
+        - id: queue
+          uri: lb://queue-service
+          predicates:
+            - Path=/api/queue/**
+        - id: laboratory
+          uri: lb://laboratory-service
+          predicates:
+            - Path=/api/lab/**
+        # Platform demo route: proves Eureka-resolved (lb://) routing end-to-end
+        # before any business service exists. Replaced by real routes per phase.
+        - id: platform-config-health
+          uri: lb://config-server
+          predicates:
+            - Path=/api/_platform/config-health
+          filters:
+            - SetPath=/actuator/health
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            # Both SPA origins must be listed, even though the containerized
+            # setup is same-origin through nginx: browsers send an `Origin`
+            # header on same-origin POST/PUT/DELETE (not on GET), and the
+            # gateway's CORS filter rejects unlisted origins with a bare 403
+            # before routing. Symptom when this is wrong: GETs fine, every
+            # POST 403s with an empty body.
+            #   4200 = ng serve (dev)   4300 = nginx container
+            allowed-origins:
+              - "http://localhost:4200"
+              - "http://localhost:4300"
+            allowed-methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+            allowed-headers: "*"
+            allow-credentials: true
+            max-age: 3600
+
+careconnect:
+  jwt:
+    secret: ${JWT_SECRET:careconnect-local-dev-secret-key-please-override-1234}
+  gateway:
+    # Requests matching these patterns pass without a JWT. Everything else is 401'd
+    # at the edge. Keep this list short and reviewed — it is the public surface.
+    public-paths: >-
+      /api/auth/register,
+      /api/auth/login,
+      /api/auth/refresh,
+      /api/auth/logout,
+      /api/providers/directory/**,
+      /api/providers/departments,
+      /api/queue/stream/**,
+      /api/queue/board/**,
+      /api/_platform/**
