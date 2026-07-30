@@ -21,6 +21,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.test.context.EmbeddedKafka;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -49,6 +50,7 @@ class BillingIntegrationTest {
     @Autowired KafkaTemplate<String, String> kafka;
     @Autowired InvoiceRepository invoices;
     @Autowired BillingService billing;
+    @Autowired TransactionTemplate transactions;
 
     private String completedEvent(String eventId, UUID appointmentId, UUID patientId, String fee) {
         return """
@@ -104,6 +106,14 @@ class BillingIntegrationTest {
         Invoice paid = billing.pay(invoice.getId(), patient, false,
                 new BigDecimal("650.00"), "SIMULATED", "ref-" + UUID.randomUUID());
         assertThat(paid.getStatus()).isEqualTo(InvoiceStatus.PAID);
-        assertThat(paid.getPayments()).hasSize(1);
+
+        // Re-read inside a transaction rather than touching paid.getPayments():
+        // the returned entity is detached once pay()'s transaction commits, so
+        // its lazy collection cannot initialise. Asserting on what is actually
+        // in the database is the stronger check anyway — it proves the payment
+        // row was written with its FK, which is the thing that used to fail.
+        int persistedPayments = transactions.execute(status ->
+                invoices.findById(invoice.getId()).orElseThrow().getPayments().size());
+        assertThat(persistedPayments).isEqualTo(1);
     }
 }
