@@ -57,6 +57,26 @@ jobs:
             exit 1
           fi
 
+      # Surefire's failure detail lives in files nobody opens. Echoing it as
+      # ::error:: annotations puts the actual assertion on the run summary and
+      # the PR diff, so a red build says *what* broke without downloading an
+      # artifact first.
+      - name: Report test failures
+        if: failure()
+        working-directory: backend
+        run: |
+          shopt -s nullglob
+          for f in */target/surefire-reports/*.txt; do
+            if grep -qE '<<< (FAILURE|ERROR)' "$f"; then
+              echo "::group::$f"
+              cat "$f"
+              echo "::endgroup::"
+              detail=$(grep -A4 -E '<<< (FAILURE|ERROR)' "$f" | head -20 \
+                       | tr '\n' ' ' | sed 's/::/;;/g' | cut -c1-900)
+              echo "::error title=$(basename "$f" .txt)::${detail}"
+            fi
+          done
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -121,7 +141,16 @@ jobs:
       # Cheap, and catches the class of mistake that only surfaces when someone
       # tries to start the stack: a broken anchor, or a deleted service still
       # named in another service's depends_on.
+      # docker-compose.prod.yml uses ${VAR:?} guards so a real deployment cannot
+      # start without secrets. That makes `config` fail here too, which is the
+      # guard working — so supply throwaway values to validate the *structure*.
       - name: Validate compose files
+        env:
+          GATEWAY_SHARED_SECRET: ci-validation-only
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          JWT_SECRET: ci-validation-only-not-a-real-secret
+          SEED_ADMIN_PASSWORD: ci-validation-only
         run: |
           docker compose -f docker-compose.yml config --quiet
           docker compose -f docker-compose.prod.yml config --quiet
