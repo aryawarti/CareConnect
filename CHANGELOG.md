@@ -38,6 +38,16 @@ All notable changes to CareConnect. Format follows [Keep a Changelog](https://ke
 - **Two dashboard bugs that misled users.** `patient-dashboard` set "complete your profile" on *any* error from the profile call, so a brief patient-service outage nagged patients to create a profile they already had; `doctor-dashboard` did the same with "submit your credentials". Both now key off a 404 only. `doctor-dashboard` also replaced a `setTimeout(…, 1500)` guess after completing a visit — the chart is created asynchronously by medical-record-service consuming `AppointmentCompleted`, so the message now says the chart "is being created" rather than claiming it exists, and refreshes twice instead of betting on one delay.
 - The public waiting board shows "Reconnecting…" instead of a blank screen when it cannot reach the server. A kiosk has nobody to click retry, and an unexplained empty board reads to staff as an empty queue.
 
+### Fixed — three defects that had never run anywhere
+
+Found within minutes of CI running the Testcontainers tests for the first time. All three
+were invisible locally because the tests were skipping and the reactor died before three
+modules were even reached.
+
+- **Recording a payment violated `payments.invoice_id NOT NULL`.** `Invoice` mapped payments as a unidirectional `@OneToMany` with `@JoinColumn`, so Hibernate inserted the `Payment` with a null FK and back-filled it with a second `UPDATE` — which the `NOT NULL` rejected. **Paying an invoice had never worked against a real database.** `BillingControllerTest` mocks the service and `BillingIntegrationTest` is `disabledWithoutDocker`, so the only test touching the real mapping had never executed. `Payment` now owns the FK (`@ManyToOne` + `mappedBy`), written on the insert itself.
+- **`AppointmentIntegrationTest` tests fought over the same slot.** Three of them booked the same doctor at the same "next Monday 10:00" against a shared container with no cleanup, so whichever ran second hit the exclusion constraint and failed with a real `AppointmentConflictException`. The doctor id is now scoped per test, making each independent by construction rather than relying on a `@BeforeEach` truncate that the next author has to remember.
+- **A test asserted a lazy collection on a detached entity.** `paid.getPayments()` ran after the transaction had committed. Production survives this only because `BillingController` is `@Transactional` — itself the layering smell flagged for follow-up. The test now re-reads inside a transaction, which is the stronger assertion anyway: it proves the row reached the database.
+
 ### Fixed
 
 - **The live queue did not work in the deployed stack at all.** `nginx.conf` proxied the SSE endpoint through its generic `/api/` block, where nginx's default `proxy_buffering on` holds an event stream instead of forwarding it and the default 60s `proxy_read_timeout` kills an idle one — which, for a waiting-room board, is most of the day. It worked under `ng serve` (which proxies unbuffered), which is exactly why it went unnoticed: the flagship feature was broken only in the configuration the README tells you to run. Added a dedicated `location /api/queue/stream/` with `proxy_buffering off`, `proxy_http_version 1.1`, a cleared `Connection` header and a 1-hour read timeout.

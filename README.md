@@ -146,6 +146,43 @@ worth having. Known coverage gaps (queue-service has none) are listed in
 [the testing chapter](docs/srs/12-deployment-and-testing.md#known-gaps-in-coverage)
 rather than left for you to discover.
 
+## Continuous delivery
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) — one pipeline, four jobs, CD gated
+on CI:
+
+| Job | What it proves |
+|---|---|
+| **Backend** | `./mvnw verify` on JDK 21 — and, crucially, **asserts that no test was skipped** |
+| **Frontend** | typecheck, Karma unit tests, production build |
+| **Compose** | both compose files parse, catching a dangling `depends_on` before anyone tries to start the stack |
+| **Publish** | builds an image per service and pushes to GHCR — only on `main`/tags, only after the three above pass |
+
+The skip assertion is the part worth explaining. Every Testcontainers test is annotated
+`disabledWithoutDocker`, so on a machine without a working Docker they **skip silently and
+the build still goes green** — including every concurrency and event-pipeline test. CI has
+real Docker, so a skip there means something is wrong, and the job fails rather than
+passing for the same misleading reason a laptop does.
+
+That guard immediately earned its keep. The first green-looking run hid three defects that
+had never executed anywhere: two integration test classes fought over the same appointment
+slot, and **recording a payment violated a `NOT NULL` constraint** — a unidirectional
+`@OneToMany` meant Hibernate inserted the payment with a null FK and back-filled it, so
+paying an invoice had never once worked against a real database.
+
+Images are runtime-only (jars built in CI, then copied in), and the publish job reuses the
+exact artifacts the test jobs produced — so what ships is what was tested, not a rebuild
+that ought to match.
+
+```bash
+export CARECONNECT_REGISTRY=ghcr.io/<owner>
+export CARECONNECT_TAG=<commit-sha>          # or latest
+docker compose -f docker-compose.prod.yml up -d
+```
+
+`docker-compose.prod.yml` deliberately does **not** set `ALLOW_INSECURE_DEFAULTS`, so the
+services refuse to start until real secrets are supplied — the guard doing its job.
+
 ## Documentation
 
 Architecture-first, written and maintained alongside the code — [start here](docs/README.md).
