@@ -8,7 +8,6 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
-import jakarta.persistence.JoinColumn;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 import java.math.BigDecimal;
@@ -66,8 +65,11 @@ public class Invoice {
     @Column(name = "voided_reason")
     private String voidedReason;
 
-    @OneToMany(cascade = CascadeType.ALL, orphanRemoval = true)
-    @JoinColumn(name = "invoice_id")
+    // mappedBy, not @JoinColumn: Payment owns the FK. See the note on
+    // Payment.invoice — the unidirectional form could not satisfy the NOT NULL
+    // on payments.invoice_id, because Hibernate inserts the child first and
+    // back-fills the FK in a second statement.
+    @OneToMany(mappedBy = "invoice", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<Payment> payments = new ArrayList<>();
 
     @CreatedDate  @Column(name = "created_at", updatable = false) private Instant createdAt;
@@ -105,7 +107,7 @@ public class Invoice {
             throw new InvoiceStateException(
                     "Partial payments are not supported — expected %s".formatted(this.amount));
         }
-        Payment payment = new Payment(amount, method, reference);
+        Payment payment = new Payment(this, amount, method, reference);
         payments.add(payment);
         this.status = InvoiceStatus.PAID;
         this.paidAt = Instant.now();
