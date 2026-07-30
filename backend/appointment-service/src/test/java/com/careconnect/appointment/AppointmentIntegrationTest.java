@@ -43,7 +43,23 @@ class AppointmentIntegrationTest {
     static final WireMockServer WIREMOCK = new WireMockServer(0);
     static final ZoneId ZONE = ZoneId.of("Asia/Kolkata");
     static final UUID PATIENT = UUID.randomUUID();
-    static final UUID DOCTOR = UUID.randomUUID();
+
+    /**
+     * A FRESH doctor per test, and that is load-bearing rather than tidiness.
+     *
+     * These tests share one Postgres container with no cleanup between them, and
+     * several of them book the same "next Monday 10:00" slot. The exclusion
+     * constraint is scoped to a doctor, so with a shared doctor id whichever
+     * test ran second lost the race against the first one's leftover row and
+     * failed with a genuine AppointmentConflictException.
+     *
+     * It went unnoticed because the whole class is `disabledWithoutDocker` and
+     * had been skipping — the isolation bug only appeared once CI actually ran
+     * it. Scoping the doctor per test makes each independent by construction,
+     * which is better than truncating tables in a @BeforeEach: nothing to
+     * remember when the next test is added.
+     */
+    private UUID doctor;
 
     @TestConfiguration
     static class Containers {
@@ -83,6 +99,7 @@ class AppointmentIntegrationTest {
 
     @BeforeEach
     void stubDependencies() {
+        doctor = UUID.randomUUID();
         WIREMOCK.resetAll();
         WIREMOCK.stubFor(get(urlPathMatching("/api/patients/.*/summary")).willReturn(aResponse()
                 .withHeader("Content-Type", "application/json")
@@ -93,12 +110,12 @@ class AppointmentIntegrationTest {
                 .withBody("""
                         {"data":{"id":"%s","active":true,"fullName":"Nisha Rao",
                          "consultationFee":800.00,"dayOff":false,
-                         "windows":[{"start":"09:00","end":"13:00","slotMinutes":30}]}}""".formatted(DOCTOR))));
+                         "windows":[{"start":"09:00","end":"13:00","slotMinutes":30}]}}""".formatted(doctor))));
     }
 
     @Test
     void bookingSnapshotsFeeAndNames() {
-        Appointment a = service.book(new BookRequest(DOCTOR, null, nextMondayAt10(), "checkup"), PATIENT);
+        Appointment a = service.book(new BookRequest(doctor, null, nextMondayAt10(), "checkup"), PATIENT);
 
         assertThat(a.getFeeSnapshot()).isEqualByComparingTo("800.00");
         assertThat(a.getDoctorName()).isEqualTo("Nisha Rao");
@@ -108,13 +125,13 @@ class AppointmentIntegrationTest {
     @Test
     void doubleBookingIsRejectedByTheDatabaseAndCancellingFreesTheSlot() {
         Instant slot = nextMondayAt10();
-        Appointment first = service.book(new BookRequest(DOCTOR, null, slot, null), PATIENT);
+        Appointment first = service.book(new BookRequest(doctor, null, slot, null), PATIENT);
 
-        assertThatThrownBy(() -> service.book(new BookRequest(DOCTOR, null, slot, null), UUID.randomUUID()))
+        assertThatThrownBy(() -> service.book(new BookRequest(doctor, null, slot, null), UUID.randomUUID()))
                 .isInstanceOf(AppointmentConflictException.class);
 
         service.cancelAsStaff(first.getId());
-        Appointment rebooked = service.book(new BookRequest(DOCTOR, null, slot, null), PATIENT);
+        Appointment rebooked = service.book(new BookRequest(doctor, null, slot, null), PATIENT);
         assertThat(rebooked.getId()).isNotEqualTo(first.getId());
     }
 
@@ -122,18 +139,18 @@ class AppointmentIntegrationTest {
     void freeSlotsExcludeBookedOnes() {
         Instant slot = nextMondayAt10();
         LocalDate date = LocalDate.ofInstant(slot, ZONE);
-        int before = service.freeSlots(DOCTOR, date).size();
+        int before = service.freeSlots(doctor, date).size();
 
-        service.book(new BookRequest(DOCTOR, null, slot, null), PATIENT);
+        service.book(new BookRequest(doctor, null, slot, null), PATIENT);
 
-        assertThat(service.freeSlots(DOCTOR, date)).hasSize(before - 1)
+        assertThat(service.freeSlots(doctor, date)).hasSize(before - 1)
                 .noneMatch(s -> s.startAt().equals(slot));
     }
 
     @Test
     void bookingOutsideAvailabilityIsRejected() {
         Instant eightPm = nextMondayAt10().plusSeconds(10 * 3600);
-        assertThatThrownBy(() -> service.book(new BookRequest(DOCTOR, null, eightPm, null), PATIENT))
+        assertThatThrownBy(() -> service.book(new BookRequest(doctor, null, eightPm, null), PATIENT))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("availability");
     }
@@ -143,7 +160,7 @@ class AppointmentIntegrationTest {
         WIREMOCK.stubFor(get(urlPathMatching("/api/providers/doctors/.*/booking-info"))
                 .willReturn(aResponse().withStatus(500)));
 
-        assertThatThrownBy(() -> service.book(new BookRequest(DOCTOR, null, nextMondayAt10(), null), PATIENT))
+        assertThatThrownBy(() -> service.book(new BookRequest(doctor, null, nextMondayAt10(), null), PATIENT))
                 .isInstanceOf(DependencyUnavailableException.class);
     }
 }
