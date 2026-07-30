@@ -14,6 +14,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -88,11 +89,24 @@ public class AppointmentController {
                 .map(AppointmentResponse::from).toList());
     }
 
+    /**
+     * A doctor's day. Staff run the clinic and may read any doctor's; a DOCTOR
+     * may read only their own.
+     *
+     * The doctorId comes from the URL, so it is caller-supplied and proves
+     * nothing — without the comparison below, any doctor could read a
+     * colleague's full day including every patient's name and reason for visit.
+     */
     @GetMapping("/doctor/{doctorId}")
     @PreAuthorize("hasAnyRole('STAFF','ADMIN','DOCTOR')")
     public ApiEnvelope<List<AppointmentResponse>> doctorDay(
             @PathVariable UUID doctorId,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @AuthenticationPrincipal String userId,
+            Authentication auth) {
+        if (!isStaff(auth) && !service.resolveOwnDoctorId(UUID.fromString(userId)).equals(doctorId)) {
+            throw new AccessDeniedException("This schedule belongs to another doctor");
+        }
         return ApiEnvelope.of(service.doctorDay(doctorId, date).stream()
                 .map(AppointmentResponse::from).toList());
     }

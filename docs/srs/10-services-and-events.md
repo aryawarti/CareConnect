@@ -52,6 +52,11 @@ language changes, ownership changes, or failure must be isolated:
 | Topic | Partitions | Key | Producer | Consumers |
 |---|---|---|---|---|
 | `patient.events` | 3 | patientId | patient | notification, analytics, audit |
+> Topics for services marked *Planned* above are specified here but do not exist at
+> runtime. Live today: `patient.events`, `appointment.events`, `queue.events`,
+> `billing.events`. `lab.events` was live and was removed with laboratory-service
+> ([ADR-010](../adr/adr-010-remove-laboratory-service.md)).
+
 | `appointment.events` | 3 | appointmentId | appointment | queue, medical-record, billing, notification, analytics |
 | `queue.events` | 3 | queueEntryId | queue | appointment, analytics, notification |
 | `clinical.events` | 3 | encounterId | medical-record | pharmacy, billing, analytics, audit |

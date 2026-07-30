@@ -20,4 +20,11 @@ public interface EncounterRepository extends JpaRepository<Encounter, UUID> {
     Page<Encounter> findByPatientIdOrderByOccurredAtDesc(UUID patientId, Pageable pageable);
 
     Page<Encounter> findByDoctorIdOrderByOccurredAtDesc(UUID doctorId, Pageable pageable);
+
+    /**
+     * Has this doctor ever treated this patient? The treating relationship that
+     * entitles a doctor to read a patient's history. Backed by
+     * idx_encounters_patient_doctor.
+     */
+    boolean existsByPatientIdAndDoctorId(UUID patientId, UUID doctorId);
 }

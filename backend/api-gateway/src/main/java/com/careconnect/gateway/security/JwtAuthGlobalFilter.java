@@ -37,16 +37,31 @@ public class JwtAuthGlobalFilter implements GlobalFilter, Ordered {
     public static final String USER_ID_HEADER = "X-User-Id";
     public static final String ROLES_HEADER = "X-User-Roles";
     public static final String EMAIL_HEADER = "X-User-Email";
+    public static final String GATEWAY_AUTH_HEADER = "X-Gateway-Auth";
 
     private final SecretKey key;
     private final List<String> publicPaths;
+    private final String gatewaySecret;
     private final AntPathMatcher matcher = new AntPathMatcher();
 
     public JwtAuthGlobalFilter(
             @Value("${careconnect.jwt.secret}") String secret,
-            @Value("${careconnect.gateway.public-paths}") List<String> publicPaths) {
+            @Value("${careconnect.gateway.public-paths}") List<String> publicPaths,
+            @Value("${careconnect.platform.gateway-secret:}") String gatewaySecret) {
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.publicPaths = publicPaths;
+        this.gatewaySecret = gatewaySecret;
+    }
+
+    /**
+     * Proof to the downstream service that this request really came through the
+     * gateway. Without it, services strip the identity headers below and treat
+     * the caller as anonymous (see GatewayTrustFilter in platform-starter).
+     */
+    private void stampGatewayOrigin(HttpHeaders headers) {
+        if (!gatewaySecret.isBlank()) {
+            headers.set(GATEWAY_AUTH_HEADER, gatewaySecret);
+        }
     }
 
     @Override
@@ -60,6 +75,7 @@ public class JwtAuthGlobalFilter implements GlobalFilter, Ordered {
                         h.remove(USER_ID_HEADER);
                         h.remove(ROLES_HEADER);
                         h.remove(EMAIL_HEADER);
+                        stampGatewayOrigin(h);
                     })
                     .build();
             return chain.filter(exchange.mutate().request(sanitized).build());
@@ -84,6 +100,7 @@ public class JwtAuthGlobalFilter implements GlobalFilter, Ordered {
                         h.set(ROLES_HEADER, roles == null ? "" : String.join(",", roles));
                         String email = claims.get("email", String.class);
                         h.set(EMAIL_HEADER, email == null ? "" : email);
+                        stampGatewayOrigin(h);
                     })
                     .build();
             return chain.filter(exchange.mutate().request(request).build());
@@ -106,7 +123,7 @@ public class JwtAuthGlobalFilter implements GlobalFilter, Ordered {
 
     @Override
     public int getOrder() {
-        // After correlation-ID assignment, before routing.
-        return Ordered.HIGHEST_PRECEDENCE + 1;
+        // After correlation-ID assignment (+0) and rate limiting (+1), before routing.
+        return Ordered.HIGHEST_PRECEDENCE + 2;
     }
 }

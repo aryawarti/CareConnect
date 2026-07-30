@@ -40,7 +40,7 @@ const DAYS = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Satur
               </button>
             </mat-list-item>
           } @empty {
-            <p style="color:#666">No availability defined yet.</p>
+            <p class="cc-muted">No availability defined yet.</p>
           }
         </mat-list>
 

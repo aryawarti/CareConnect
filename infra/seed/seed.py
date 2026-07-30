@@ -25,8 +25,6 @@ ADMIN_EMAIL = os.environ.get("SEED_ADMIN_EMAIL", "admin@careconnect.local")
 ADMIN_PASSWORD = os.environ.get("SEED_ADMIN_PASSWORD", "Admin12345")
 DOCTOR_PASSWORD = os.environ.get("SEED_DOCTOR_PASSWORD", "Doctor12345")
 PATIENT_PASSWORD = os.environ.get("SEED_PATIENT_PASSWORD", "Patient12345")
-LAB_PASSWORD = os.environ.get("SEED_LAB_PASSWORD", "LabTech12345")
-LAB_TECH_EMAIL = "lab.tech@careconnect.demo"
 MARKER_EMAIL = "asha.verma@careconnect.demo"   # presence => already seeded
 
 
@@ -190,12 +188,6 @@ def main():
     }, applicant["accessToken"])
     print("  applicant awaiting approval: Dr. Rohan Kapoor (Neurology)", flush=True)
 
-    # ---- laboratory technician (runs the bench worklist) --------------------
-    call("POST", "/api/users", {
-        "email": LAB_TECH_EMAIL, "password": LAB_PASSWORD, "roles": ["LAB_TECHNICIAN"]
-    }, admin_token)
-    print(f"  lab technician: {LAB_TECH_EMAIL}", flush=True)
-
     # ---- patients: account + profile ---------------------------------------
     patients = []
     for first, last, dob, gender, phone, email in PATIENTS:
@@ -284,7 +276,6 @@ def main():
     print("Writing clinical notes...", flush=True)
     time.sleep(6)   # let the outbox relay + consumers create encounters/invoices
 
-    lab_orders = []   # (order_id, patient_token) captured for the lab pass below
     for i, (appointment, doctor, (reason, notes, diagnoses, prescriptions)) in enumerate(completed):
         doctor_auth = login(doctor["email"], DOCTOR_PASSWORD)
         doctor_token = doctor_auth["accessToken"]
@@ -305,49 +296,6 @@ def main():
             }, doctor_token)
         call("POST", f"/api/records/{encounter_id}/signature", {}, doctor_token)
 
-        # Order a couple of lab tests from the first two encounters, so the lab
-        # worklist and the patient's results view are not empty in a demo.
-        if i < 2:
-            catalogue = call("GET", "/api/lab/catalogue", token=doctor_token)["data"]
-            wanted = [t["id"] for t in catalogue if t["code"] in ("CBC", "LFT")][:2]
-            if wanted:
-                order = call("POST", "/api/lab/orders", {
-                    "encounterId": encounter_id, "patientId": appointment["patientId"],
-                    "clinicalIndication": "Baseline workup", "priority": "ROUTINE",
-                    "testIds": wanted,
-                }, doctor_token)["data"]
-                lab_orders.append((order["id"], patients[i]["token"]))
-
-    # ---- laboratory: run the bench worklist to release reports --------------
-    if lab_orders:
-        print("Processing lab orders...", flush=True)
-        lab_auth = login(LAB_TECH_EMAIL, LAB_PASSWORD)
-        lab_token = lab_auth["accessToken"]
-        for idx, (order_id, _patient_token) in enumerate(lab_orders):
-            call("POST", f"/api/lab/orders/{order_id}/collection",
-                 {"specimenType": "Whole blood (EDTA)"}, lab_token)
-            # Leave the last order mid-pipeline so the worklist shows work in
-            # progress; take the rest all the way to a verified, released report.
-            if idx == len(lab_orders) - 1 and len(lab_orders) > 1:
-                continue
-            call("POST", f"/api/lab/orders/{order_id}/processing", {}, lab_token)
-            detail = call("GET", f"/api/lab/orders/{order_id}", token=lab_token)["data"]
-            catalogue = call("GET", "/api/lab/catalogue", token=lab_token)["data"]
-            for item in detail["items"]:
-                test = next((t for t in catalogue if t["code"] == item["testCode"]), None)
-                if not test:
-                    continue
-                results = []
-                for analyte in test["analytes"]:
-                    lo, hi = analyte.get("refLow"), analyte.get("refHigh")
-                    # a value comfortably inside the reference range
-                    value = (float(lo) + float(hi)) / 2 if lo is not None and hi is not None else 1
-                    results.append({"analyteId": analyte["id"], "value": f"{value:.1f}"})
-                if results:
-                    call("POST", f"/api/lab/orders/{order_id}/results",
-                         {"orderItemId": item["id"], "results": results}, lab_token)
-            call("POST", f"/api/lab/orders/{order_id}/verification", {}, lab_token)
-
     # ---- pay some invoices, leave others outstanding ------------------------
     print("Settling some invoices...", flush=True)
     for index, patient in enumerate(patients[:2]):
@@ -365,7 +313,6 @@ def main():
     print("\nDemo clinic ready.", flush=True)
     print(f"  Admin   : {ADMIN_EMAIL} / {ADMIN_PASSWORD}", flush=True)
     print(f"  Doctor  : dr.rao@careconnect.demo / {DOCTOR_PASSWORD}", flush=True)
-    print(f"  Lab tech: {LAB_TECH_EMAIL} / {LAB_PASSWORD}", flush=True)
     print(f"  Patient : {MARKER_EMAIL} / {PATIENT_PASSWORD}", flush=True)
 
 

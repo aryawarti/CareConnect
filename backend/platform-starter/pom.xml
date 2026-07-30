@@ -13,9 +13,11 @@
     <name>CareConnect Platform Starter</name>
     <description>
         The ONE shared library permitted by ADR-001, and only for cross-cutting
-        conventions every service must implement identically (correlation-id
-        propagation). Business code never goes here: shared libraries couple
-        release cycles, so this stays deliberately tiny.
+        conventions every service must implement identically: correlation-id
+        propagation, and the gateway-trust check that stops any caller other
+        than the gateway from asserting an identity. Business code never goes
+        here: shared libraries couple release cycles, so this stays
+        deliberately tiny.
     </description>
 
     <dependencies>
@@ -27,6 +29,14 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+        <!-- Optional: only services that call other services pull OpenFeign in.
+             The interceptor bean is @ConditionalOnClass, so identity-service and
+             notification-service (no Feign clients) simply don't get it. -->
+        <dependency>
+            <groupId>io.github.openfeign</groupId>
+            <artifactId>feign-core</artifactId>
+            <optional>true</optional>
         </dependency>
     </dependencies>
 </project>

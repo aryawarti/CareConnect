@@ -1,0 +1,19 @@
+# Normalise line endings so a Windows checkout and a Linux CI runner agree.
+# Without this, git warns on every add and diffs get noisy across machines.
+* text=auto eol=lf
+
+# Windows-only scripts must stay CRLF or cmd.exe mis-parses them.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# The Maven wrapper is executed by /bin/sh on CI — CRLF here produces the
+# classic "bad interpreter: no such file or directory".
+mvnw       text eol=lf
+gradlew    text eol=lf
+
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.woff binary
+*.woff2 binary

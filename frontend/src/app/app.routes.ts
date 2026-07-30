@@ -60,6 +60,18 @@ export const routes: Routes = [
     loadComponent: () => import('./features/records/my-records.component').then(m => m.MyRecordsComponent)
   },
   {
+    // "Who has seen my records" — the patient's own view of the access trail.
+    path: 'my-record-access',
+    canActivate: [authGuard, roleGuard('PATIENT')],
+    loadComponent: () => import('./features/records/record-access.component').then(m => m.RecordAccessComponent)
+  },
+  {
+    // The audit view of the same trail, for one patient.
+    path: 'patients/:patientId/access',
+    canActivate: [authGuard, roleGuard('STAFF', 'ADMIN')],
+    loadComponent: () => import('./features/records/record-access.component').then(m => m.RecordAccessComponent)
+  },
+  {
     path: 'records',
     canActivate: [authGuard, roleGuard('DOCTOR')],
     loadComponent: () => import('./features/records/encounter-editor.component').then(m => m.EncounterEditorComponent)
@@ -68,16 +80,6 @@ export const routes: Routes = [
     path: 'my-invoices',
     canActivate: [authGuard, roleGuard('PATIENT')],
     loadComponent: () => import('./features/billing/my-invoices.component').then(m => m.MyInvoicesComponent)
-  },
-  {
-    path: 'lab',
-    canActivate: [authGuard, roleGuard('LAB_TECHNICIAN', 'ADMIN', 'STAFF')],
-    loadComponent: () => import('./features/lab/lab-worklist.component').then(m => m.LabWorklistComponent)
-  },
-  {
-    path: 'my-lab',
-    canActivate: [authGuard, roleGuard('PATIENT')],
-    loadComponent: () => import('./features/lab/my-lab-results.component').then(m => m.MyLabResultsComponent)
   },
   {
     path: 'billing',

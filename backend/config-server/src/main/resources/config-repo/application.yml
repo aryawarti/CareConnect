@@ -14,6 +14,20 @@ eureka:
     lease-renewal-interval-in-seconds: 10
     lease-expiration-duration-in-seconds: 30
 
+server:
+  # Finish in-flight requests instead of dropping them when the container gets
+  # SIGTERM. Without this, every redeploy fails whatever was mid-flight — and
+  # for the outbox relay, a kill between the Kafka send and the commit is
+  # precisely the case that causes a duplicate delivery on restart.
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    # Ceiling on the drain. This exceeds Docker's default 10s SIGTERM grace, so
+    # docker-compose sets stop_grace_period to match — otherwise Docker sends
+    # SIGKILL first and the graceful setting here would be decorative.
+    timeout-per-shutdown-phase: 25s
+
 management:
   endpoints:
     web:
@@ -39,5 +53,31 @@ logging:
     # One user action -> one id -> greppable across every service it touched.
     level: "%5p [${spring.application.name:},%X{correlationId:-}]"
 
-# Feign propagates the correlation header on service-to-service calls
-# (appointment-service FeignConfig); Kafka events carry it in the envelope.
+careconnect:
+  outbox:
+    poll-interval-ms: 1000
+    batch-size: 100
+    # Attempts are only consumed by failures the *record* caused, never by a
+    # broker outage, so this is a budget for genuinely unpublishable payloads.
+    # After it runs out the event stays in outbox_events as its own dead-letter
+    # record and stops blocking the queue; watch careconnect.outbox.dead.
+    max-attempts: 10
+  security:
+    # Fail-closed: an environment that never sets this gets the strict check, so
+    # forgetting to configure secrets stops the service instead of silently
+    # running on the ones published in this repository. docker-compose opts
+    # local dev in explicitly (InsecureDefaultsGuard).
+    allow-insecure-defaults: ${ALLOW_INSECURE_DEFAULTS:false}
+  platform:
+    # Shared secret proving a request reached a service *through the gateway*.
+    # Services strip X-User-* headers that arrive without it, so a caller who
+    # bypasses the gateway cannot assert an identity (GatewayTrustFilter).
+    #
+    # Empty by default so tests and a bare `mvn spring-boot:run` keep working.
+    # docker-compose sets it for every service; each service logs a warning at
+    # startup when it is absent, so an unprotected deployment is never silent.
+    gateway-secret: ${GATEWAY_SHARED_SECRET:}
+
+# Feign propagates the correlation header and the caller's identity on
+# service-to-service calls (platform-starter IdentityForwardingInterceptor);
+# Kafka events carry the correlation id in the envelope.

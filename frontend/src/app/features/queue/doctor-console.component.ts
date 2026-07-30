@@ -1,5 +1,6 @@
 import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { EMPTY, catchError, startWith, switchMap } from 'rxjs';
 import { DatePipe } from '@angular/common';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -22,8 +23,13 @@ import { EmptyStateComponent } from '../../shared/ui.components';
         <div>
           <h1>Live queue</h1>
           <div class="cc-sub">
-            @if (snapshot(); as s) {
-              {{ s.waiting }} waiting · typical consultation {{ s.averageConsultationMinutes }} min
+            <!-- No "as" alias below the primary branch: Angular only allows it
+                 on the first @if, so the later branches read the signal directly. -->
+            @if (streamError(); as problem) {
+              <span class="cc-pill warn">{{ problem }}</span>
+            } @else if (snapshot()) {
+              {{ snapshot()?.waiting }} waiting ·
+              typical consultation {{ snapshot()?.averageConsultationMinutes }} min
               <span class="cc-pill ok" style="margin-left:8px">
                 <span class="cc-live-dot"></span> live
               </span>
@@ -153,6 +159,7 @@ export class DoctorConsoleComponent {
 
   readonly snapshot = signal<QueueSnapshot | null>(null);
   readonly doctorId = signal<string | null>(null);
+  readonly streamError = signal<string | null>(null);
 
   readonly nowServing = computed(() =>
     this.snapshot()?.entries.find(e => e.status === 'IN_CONSULTATION') ?? null);
@@ -173,10 +180,30 @@ export class DoctorConsoleComponent {
     });
   }
 
+  /**
+   * The SSE stream is public, so it carries only the redacted board payload —
+   * no names, no complaints. The console needs both, so each event is treated
+   * purely as a "something changed" nudge and the full queue is re-read over
+   * an authenticated request. switchMap drops an in-flight read when a newer
+   * event arrives, so a burst of changes settles on the latest state rather
+   * than replaying stale ones.
+   */
   private connect(doctorId: string): void {
     this.queue.stream(doctorId)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe(snapshot => this.snapshot.set(snapshot));
+      .pipe(
+        startWith(null),
+        switchMap(() => this.queue.console(doctorId).pipe(
+          catchError(() => {
+            this.streamError.set('Live updates interrupted — reconnecting…');
+            return EMPTY;
+          })
+        )),
+        takeUntilDestroyed(this.destroyRef)
+      )
+      .subscribe(snapshot => {
+        this.snapshot.set(snapshot);
+        this.streamError.set(null);
+      });
   }
 
   callNext(): void {

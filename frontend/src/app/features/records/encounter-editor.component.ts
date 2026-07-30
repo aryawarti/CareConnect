@@ -12,7 +12,6 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { RecordsService } from '../../core/records/records.service';
 import { Encounter } from '../../core/records/record.models';
-import { LabOrderPanelComponent } from './lab-order-panel.component';
 
 /** Doctor's charting workspace: pick an encounter, document it, sign it. */
 @Component({
@@ -20,7 +19,7 @@ import { LabOrderPanelComponent } from './lab-order-panel.component';
   standalone: true,
   imports: [DatePipe, ReactiveFormsModule, MatCardModule, MatFormFieldModule, MatInputModule,
             MatButtonModule, MatIconModule, MatChipsModule, MatListModule, MatSelectModule,
-            MatSnackBarModule, LabOrderPanelComponent],
+            MatSnackBarModule],
   template: `
     <div class="cc-page" style="max-width:900px">
       <div class="cc-page-head"><div><h1>Clinical charts</h1><div class="cc-sub">Document and sign your encounters</div></div></div>
@@ -68,7 +67,7 @@ import { LabOrderPanelComponent } from './lab-order-panel.component';
               <p style="white-space:pre-wrap">{{ enc.notes }}</p>
               <form [formGroup]="amendForm" (ngSubmit)="amend(enc)"
                     style="display:flex;flex-direction:column;gap:8px;margin-top:16px">
-                <p style="color:#666;font-size:13px">
+                <p class="cc-muted cc-text-sm">
                   This record is {{ enc.status }} — corrections are recorded as amendments
                   and the previous text is preserved.
                 </p>
@@ -90,7 +89,7 @@ import { LabOrderPanelComponent } from './lab-order-panel.component';
             <mat-list>
               @for (d of enc.diagnoses; track d.id) {
                 <mat-list-item><strong>{{ d.code }}</strong> — {{ d.description }}</mat-list-item>
-              } @empty { <p style="color:#666">None recorded.</p> }
+              } @empty { <p class="cc-muted">None recorded.</p> }
             </mat-list>
             @if (enc.status === 'OPEN') {
               <form [formGroup]="dxForm" (ngSubmit)="addDiagnosis(enc)"
@@ -114,7 +113,7 @@ import { LabOrderPanelComponent } from './lab-order-panel.component';
                   <strong>{{ p.medication }}</strong> {{ p.dosage }}, {{ p.frequency }},
                   {{ p.durationDays }}d
                 </mat-list-item>
-              } @empty { <p style="color:#666">None recorded.</p> }
+              } @empty { <p class="cc-muted">None recorded.</p> }
             </mat-list>
             @if (enc.status === 'OPEN') {
               <form [formGroup]="rxForm" (ngSubmit)="addPrescription(enc)"
@@ -139,8 +138,6 @@ import { LabOrderPanelComponent } from './lab-order-panel.component';
               </form>
             }
 
-            <cc-lab-order-panel [encounterId]="enc.id" [patientId]="enc.patientId"
-                                [canOrder]="enc.status === 'OPEN'" />
           </mat-card-content>
         </mat-card>
       } @else {

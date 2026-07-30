@@ -34,3 +34,21 @@ export interface Encounter {
   prescriptions: Prescription[];
   amendments: Amendment[];
 }
+
+/**
+ * One recorded read of clinical data. Deliberately carries no clinical content:
+ * the trail answers "who looked", and a log that leaked the data it protects
+ * would defeat itself.
+ */
+export interface AccessLogEntry {
+  id: string;
+  actorUserId: string;
+  actorRole: string;
+  actorName: string | null;
+  patientId: string;
+  encounterId: string | null;
+  action: 'VIEW_ENCOUNTER' | 'LIST_PATIENT_HISTORY' | 'LIST_OWN_HISTORY';
+  selfAccess: boolean;
+  accessedAt: string;
+  correlationId: string | null;
+}

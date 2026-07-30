@@ -1,8 +1,74 @@
-import { Component, input } from '@angular/core';
+import { Component, input, output } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
+import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 
 /** Small presentational building blocks shared by the dashboards and screens. */
+
+/**
+ * Loading placeholder shaped like the content it stands in for.
+ *
+ * Deliberately not a centred spinner: a spinner discards the layout, so the page
+ * jumps when real content arrives. Blocks of roughly the right size keep the
+ * layout stable, which is the difference between "loading" and "broken" to
+ * someone watching.
+ *
+ * aria-busy + a polite live region, so this is announced rather than being a
+ * silent gap for anyone using a screen reader.
+ */
+@Component({
+  selector: 'cc-skeleton',
+  standalone: true,
+  template: `
+    <div class="cc-skeleton" role="status" aria-busy="true" [attr.aria-label]="label()">
+      @for (row of rows(); track $index) {
+        <div class="cc-skeleton-row" [class.card]="variant() === 'card'"></div>
+      }
+    </div>
+  `
+})
+export class SkeletonComponent {
+  readonly count = input<number>(3);
+  /** 'list' = text lines, 'card' = taller blocks. */
+  readonly variant = input<'list' | 'card'>('list');
+  readonly label = input<string>('Loading…');
+
+  rows(): number[] {
+    return Array.from({ length: this.count() }, (_, i) => i);
+  }
+}
+
+/**
+ * A failed request, reported where the user was looking, with a way out.
+ *
+ * The message comes from humanizeError, so it is a sentence about what to do
+ * rather than a status code. Retry matters more than the wording: most failures
+ * here are a service still warming up, and the honest fix is to ask again.
+ */
+@Component({
+  selector: 'cc-error',
+  standalone: true,
+  imports: [MatButtonModule, MatIconModule],
+  template: `
+    <div class="cc-alert cc-alert-error" role="alert">
+      <mat-icon>error_outline</mat-icon>
+      <div style="flex:1">
+        <div>{{ message() }}</div>
+        @if (canRetry()) {
+          <button mat-stroked-button style="margin-top:10px" (click)="retry.emit()">
+            <mat-icon>refresh</mat-icon> Try again
+          </button>
+        }
+      </div>
+    </div>
+  `
+})
+export class ErrorPanelComponent {
+  readonly message = input.required<string>();
+  /** Explicit, because an output gives no way to ask whether anyone is listening. */
+  readonly canRetry = input<boolean>(true);
+  readonly retry = output<void>();
+}
 
 @Component({
   selector: 'cc-stat',

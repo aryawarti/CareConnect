@@ -1,1 +1,2 @@
 com.careconnect.platform.logging.PlatformLoggingAutoConfiguration
+com.careconnect.platform.security.PlatformSecurityAutoConfiguration

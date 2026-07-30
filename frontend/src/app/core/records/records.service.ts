@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable, map } from 'rxjs';
 import { Envelope, PagedEnvelope } from '../patients/patient.models';
-import { Encounter } from './record.models';
+import { AccessLogEntry, Encounter } from './record.models';
 
 @Injectable({ providedIn: 'root' })
 export class RecordsService {
@@ -21,6 +21,21 @@ export class RecordsService {
 
   patientHistory(patientId: string): Observable<PagedEnvelope<Encounter>> {
     return this.http.get<PagedEnvelope<Encounter>>(`${this.base}/patient/${patientId}`);
+  }
+
+  // ---- chart access trail ---------------------------------------------------
+
+  /** Who has opened my records. */
+  myAccessLog(): Observable<AccessLogEntry[]> {
+    return this.http.get<PagedEnvelope<AccessLogEntry>>(`${this.base}/access-log/me`)
+      .pipe(map(r => r.data));
+  }
+
+  /** Audit view: every read of one patient's chart (ADMIN/STAFF). */
+  patientAccessLog(patientId: string): Observable<AccessLogEntry[]> {
+    return this.http
+      .get<PagedEnvelope<AccessLogEntry>>(`${this.base}/access-log/patient/${patientId}`)
+      .pipe(map(r => r.data));
   }
 
   get(id: string): Observable<Encounter> {

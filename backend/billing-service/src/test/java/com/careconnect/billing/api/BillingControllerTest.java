@@ -11,10 +11,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.careconnect.billing.application.BillingService;
 import com.careconnect.billing.domain.Invoice;
 import com.careconnect.billing.domain.InvoiceStateException;
+import com.careconnect.billing.infrastructure.client.PatientClient;
 import com.careconnect.billing.infrastructure.security.HeaderAuthenticationFilter;
 import com.careconnect.billing.infrastructure.security.SecurityConfig;
 import java.math.BigDecimal;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -22,15 +24,27 @@ import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+/**
+ * The controller resolves the caller's own patient id through a Feign client,
+ * which must be mocked: a @WebMvcTest slice has no FeignClientFactory, so
+ * without this the context fails to load and every test errors before running.
+ */
 @WebMvcTest(BillingController.class)
 @Import({SecurityConfig.class, HeaderAuthenticationFilter.class})
 class BillingControllerTest {
 
     @Autowired MockMvc mvc;
     @MockitoBean BillingService service;
+    @MockitoBean PatientClient patientClient;
 
     private static final UUID INVOICE = UUID.randomUUID();
     private static final String PATIENT_ID = UUID.randomUUID().toString();
+
+    @BeforeEach
+    void identityResolves() {
+        when(patientClient.me()).thenReturn(new PatientClient.Envelope<>(
+                new PatientClient.MeSummary(UUID.fromString(PATIENT_ID))));
+    }
 
     private static final String PAY_BODY = """
             {"amount":800.00,"method":"SIMULATED","reference":"ref-123"}""";

@@ -1,14 +1,20 @@
 import { Component, DestroyRef, computed, inject, input, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { QueueService, QueueSnapshot } from '../../core/queue/queue.service';
+import { QueueService, BoardSnapshot } from '../../core/queue/queue.service';
 
 /**
  * The waiting-room display board — designed to be thrown on a lobby TV.
  *
- * No login (kiosks don't have one), no clinical data (token numbers and first
- * names only), high contrast, huge type, and it updates itself over SSE. This
- * is the screen that makes the whole architecture legible to a non-technical
- * observer: a doctor clicks "call next" and the wall changes instantly.
+ * No login (kiosks don't have one), high contrast, huge type, and it updates
+ * itself over SSE. This is the screen that makes the whole architecture
+ * legible to a non-technical observer: a doctor clicks "call next" and the
+ * wall changes instantly.
+ *
+ * It renders a BoardSnapshot, which the *server* has already redacted to
+ * tokens and given names. This component previously received full entries and
+ * displayed only the first name, which protected nobody — anyone could open
+ * devtools and read the surnames and presenting complaints of everyone in the
+ * room. Redaction belongs on the side of the wire that can enforce it.
  */
 @Component({
   selector: 'cc-waiting-board',
@@ -22,7 +28,11 @@ import { QueueService, QueueSnapshot } from '../../core/queue/queue.service';
         </div>
         <div style="text-align:right">
           <div class="clock">{{ now() }}</div>
-          <div class="waiting-count">{{ snapshot()?.waiting ?? 0 }} waiting</div>
+          @if (offline()) {
+            <div class="offline">Reconnecting…</div>
+          } @else {
+            <div class="waiting-count">{{ snapshot()?.waiting ?? 0 }} waiting</div>
+          }
         </div>
       </header>
 
@@ -33,7 +43,7 @@ import { QueueService, QueueSnapshot } from '../../core/queue/queue.service';
             {{ current.tokenNumber }}
           </div>
           <div class="name">
-            {{ firstName(current.patientName) }}
+            {{ current.givenName }}
             @if (current.status === 'CALLED') { — please proceed }
           </div>
         } @else {
@@ -48,7 +58,7 @@ import { QueueService, QueueSnapshot } from '../../core/queue/queue.service';
           @for (entry of upcoming(); track entry.id) {
             <div class="chip" [class.urgent]="entry.priority !== 'NORMAL'">
               <div class="chip-token">{{ entry.tokenNumber }}</div>
-              <div class="chip-name">{{ firstName(entry.patientName) }}</div>
+              <div class="chip-name">{{ entry.givenName }}</div>
               @if (entry.estimatedWaitMinutes !== null) {
                 <div class="chip-eta">~{{ entry.estimatedWaitMinutes }} min</div>
               }
@@ -77,6 +87,7 @@ import { QueueService, QueueSnapshot } from '../../core/queue/queue.service';
     .doctor { font-size: 20px; opacity: .82; margin-top: 4px; }
     .clock { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
     .waiting-count { opacity: .7; margin-top: 4px; }
+    .offline { margin-top: 4px; color: #fca5a5; font-weight: 600; }
 
     .serving {
       background: rgba(94, 234, 212, .10); border: 1px solid rgba(94, 234, 212, .28);
@@ -90,6 +101,11 @@ import { QueueService, QueueSnapshot } from '../../core/queue/queue.service';
     .token-huge.dim { color: rgba(234, 250, 247, .25); }
     .token-huge.blink { animation: flash 1.1s ease-in-out infinite; }
     @keyframes flash { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+    /* Repeated here rather than in styles.scss: view encapsulation puts this
+       selector out of reach of the global stylesheet. */
+    @media (prefers-reduced-motion: reduce) {
+      .token-huge.blink { animation: none; outline: 3px solid #5eead4; outline-offset: 8px; }
+    }
     .name { font-size: 30px; font-weight: 500; }
 
     .upcoming { flex: 1; }
@@ -115,8 +131,14 @@ export class WaitingBoardComponent {
   private readonly queue = inject(QueueService);
   private readonly destroyRef = inject(DestroyRef);
 
-  readonly snapshot = signal<QueueSnapshot | null>(null);
+  readonly snapshot = signal<BoardSnapshot | null>(null);
   readonly now = signal(this.currentTime());
+  /**
+   * Cleared by the next successful snapshot. EventSource reconnects on its own,
+   * so the board heals without anyone touching the kiosk — this only needs to
+   * say so while it is down.
+   */
+  readonly offline = signal(false);
 
   readonly nowServing = computed(() =>
     this.snapshot()?.entries.find(e => e.status === 'IN_CONSULTATION') ?? null);
@@ -139,18 +161,20 @@ export class WaitingBoardComponent {
     // Route inputs resolve after construction; poll once then stream.
     queueMicrotask(() => {
       const id = this.doctorId();
-      this.queue.board(id).subscribe(s => this.snapshot.set(s));
+      this.queue.board(id).subscribe({
+        next: s => { this.snapshot.set(s); this.offline.set(false); },
+        // A kiosk has nobody to click "retry", so it must say what is wrong and
+        // keep trying by itself. Showing an unexplained blank board would have
+        // staff assuming the queue is empty.
+        error: () => this.offline.set(true)
+      });
       this.queue.stream(id)
         .pipe(takeUntilDestroyed(this.destroyRef))
-        .subscribe(s => this.snapshot.set(s));
+        .subscribe(s => { this.snapshot.set(s); this.offline.set(false); });
     });
 
     const clock = setInterval(() => this.now.set(this.currentTime()), 1000);
     this.destroyRef.onDestroy(() => clearInterval(clock));
-  }
-
-  firstName(fullName: string): string {
-    return fullName?.split(' ')[0] ?? '';
   }
 
   private currentTime(): string {

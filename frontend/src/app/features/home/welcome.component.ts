@@ -112,6 +112,14 @@ export class WelcomeComponent {
   ];
 
   constructor() {
-    this.providers.directory('', 0, 6).subscribe(r => this.doctors.set(r.data));
+    this.providers.directory('', 0, 6).subscribe({
+      next: r => this.doctors.set(r.data),
+      // Deliberately silent, and the only screen where that is the right answer:
+      // this is a marketing panel, not information anyone is relying on. A
+      // visitor who arrives while the backend is warming up should see the page
+      // without a doctor strip, not an error about an endpoint they never asked
+      // for. The section hides itself when the list is empty.
+      error: () => this.doctors.set([])
+    });
   }
 }

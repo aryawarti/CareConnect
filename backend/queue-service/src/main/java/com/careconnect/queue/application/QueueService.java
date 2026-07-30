@@ -1,5 +1,6 @@
 package com.careconnect.queue.application;
 
+import com.careconnect.queue.api.dto.QueueDtos.BoardSnapshot;
 import com.careconnect.queue.api.dto.QueueDtos.CheckInRequest;
 import com.careconnect.queue.api.dto.QueueDtos.QueueEntryResponse;
 import com.careconnect.queue.api.dto.QueueDtos.QueueSnapshot;
@@ -66,15 +67,22 @@ public class QueueService {
 
     // ---- joining the queue --------------------------------------------------
 
+    /**
+     * {@code patientId} is passed separately rather than read from the request:
+     * for a PATIENT caller it is the id resolved from their own account, not the
+     * one they submitted. Names are resolved by the caller too — this service
+     * never invents them.
+     */
     @Transactional
-    public QueueEntry checkIn(CheckInRequest request, String patientName, String doctorName) {
+    public QueueEntry checkIn(CheckInRequest request, UUID patientId,
+                              String patientName, String doctorName) {
         if (request.appointmentId() != null) {
             var existing = entries.findByAppointmentId(request.appointmentId());
             if (existing.isPresent()) {
                 return existing.get();       // idempotent: double-tap on "check in"
             }
         }
-        return join(request.appointmentId(), request.patientId(), request.doctorId(),
+        return join(request.appointmentId(), patientId, request.doctorId(),
                 patientName, doctorName, request.complaint(), request.priority());
     }
 
@@ -217,6 +225,16 @@ public class QueueService {
                 nowServing, responses, Instant.now());
     }
 
+    /**
+     * The same picture, redacted for the unauthenticated lobby board and its
+     * SSE stream. Everything public goes through here — see
+     * {@link com.careconnect.queue.api.dto.QueueDtos.BoardSnapshot}.
+     */
+    @Transactional(readOnly = true)
+    public BoardSnapshot boardSnapshot(UUID doctorId) {
+        return BoardSnapshot.from(snapshot(doctorId));
+    }
+
     /** A patient's own entry today, with live position and ETA. */
     @Transactional(readOnly = true)
     public QueueEntryResponse myStatus(UUID patientId) {
@@ -264,17 +282,23 @@ public class QueueService {
     /**
      * Push to live screens only after the transaction commits — otherwise a
      * rolled-back change would flash on the waiting-room board.
+     *
+     * The broadcast payload is the *redacted* board snapshot, because the SSE
+     * stream is unauthenticated (EventSource cannot send an Authorization
+     * header). Privileged screens such as the doctor console treat this as a
+     * "something changed" signal and re-fetch the full picture over an
+     * authenticated request — so PHI never travels on the public channel.
      */
     private void broadcastAfterCommit(UUID doctorId) {
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    broadcaster.broadcast(doctorId, snapshot(doctorId));
+                    broadcaster.broadcast(doctorId, boardSnapshot(doctorId));
                 }
             });
         } else {
-            broadcaster.broadcast(doctorId, snapshot(doctorId));
+            broadcaster.broadcast(doctorId, boardSnapshot(doctorId));
         }
     }
 }

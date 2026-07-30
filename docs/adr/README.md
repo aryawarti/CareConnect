@@ -13,3 +13,4 @@ One file per decision. Accepted ADRs are immutable — a changed mind produces a
 | [007](adr-007-mermaid-diagrams.md) | Mermaid-in-Markdown instead of draw.io files | Accepted |
 | [008](adr-008-flyway-migrations.md) | Flyway for schema migrations | Accepted |
 | [009](adr-009-transactional-outbox.md) | Transactional outbox for event publication | Accepted |
+| [010](adr-010-remove-laboratory-service.md) | Remove laboratory-service and the unimplemented roles | Accepted |

@@ -80,21 +80,14 @@ export class AppComponent {
     const roles = this.auth.user()?.roles ?? [];
     const isAdminOrStaff = roles.includes('ADMIN') || roles.includes('STAFF');
     const isDoctor = roles.includes('DOCTOR');
-    const isLabTech = roles.includes('LAB_TECHNICIAN') && !isAdminOrStaff;
-    const isPatient = roles.includes('PATIENT') && !isDoctor && !isAdminOrStaff && !isLabTech;
+    const isPatient = roles.includes('PATIENT') && !isDoctor && !isAdminOrStaff;
 
-    if (isLabTech) {
-      return [
-        { path: '/lab', icon: 'biotech', label: 'Lab worklist', exact: true },
-      ];
-    }
     if (isAdminOrStaff) {
       return [
         { path: '/', icon: 'dashboard', label: 'Dashboard', exact: true },
         { path: '/queue', icon: 'groups_2', label: 'Live queue' },
         { path: '/schedule', icon: 'calendar_month', label: 'Appointments' },
         { path: '/patients', icon: 'groups', label: 'Patients' },
-        { path: '/lab', icon: 'biotech', label: 'Laboratory' },
         { path: '/billing', icon: 'receipt_long', label: 'Billing' },
         { path: '/staff', icon: 'badge', label: 'Staff' },
       ];
@@ -113,7 +106,7 @@ export class AppComponent {
         { path: '/my-queue', icon: 'hourglass_top', label: 'My queue' },
         { path: '/my-appointments', icon: 'event', label: 'Appointments' },
         { path: '/my-records', icon: 'clinical_notes', label: 'Records' },
-        { path: '/my-lab', icon: 'biotech', label: 'Lab results' },
+        { path: '/my-record-access', icon: 'shield_person', label: 'Who saw my records' },
         { path: '/my-invoices', icon: 'receipt_long', label: 'Invoices' },
       ];
     }
@@ -139,11 +132,17 @@ export class AppComponent {
     if (roles.includes('ADMIN')) { return 'Administrator'; }
     if (roles.includes('STAFF')) { return 'Front desk'; }
     if (roles.includes('DOCTOR')) { return 'Doctor'; }
-    if (roles.includes('LAB_TECHNICIAN')) { return 'Lab technician'; }
     return 'Patient';
   });
 
   logout(): void {
-    this.auth.logout().subscribe(() => this.router.navigate(['/welcome']));
+    // Navigate either way. AuthService clears local session state before the
+    // request goes out, so the user is already signed out client-side — leaving
+    // them on an authenticated screen because the server-side revocation call
+    // failed would be the worse outcome of the two.
+    this.auth.logout().subscribe({
+      next: () => this.router.navigate(['/welcome']),
+      error: () => this.router.navigate(['/welcome'])
+    });
   }
 }

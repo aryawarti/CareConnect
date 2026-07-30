@@ -4,6 +4,7 @@ import com.careconnect.medicalrecord.domain.Amendment;
 import com.careconnect.medicalrecord.domain.Diagnosis;
 import com.careconnect.medicalrecord.domain.Encounter;
 import com.careconnect.medicalrecord.domain.Prescription;
+import com.careconnect.medicalrecord.domain.RecordAccessEntry;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -82,6 +83,33 @@ public final class RecordDtos {
                     e.getDoctorId(), e.getPatientName(), e.getDoctorName(), e.getOccurredAt(),
                     e.getChiefComplaint(), null, e.getStatus().name(),
                     List.of(), List.of(), List.of());
+        }
+    }
+
+    /**
+     * One entry in the chart access trail.
+     *
+     * Carries the actor's account id and email but no clinical content — the log
+     * answers "who looked", and a record of reads that itself discloses the data
+     * would be self-defeating.
+     */
+    public record AccessLogEntryResponse(
+            UUID id,
+            UUID actorUserId,
+            String actorRole,
+            String actorName,
+            UUID patientId,
+            UUID encounterId,
+            String action,
+            boolean selfAccess,
+            Instant accessedAt,
+            String correlationId) {
+
+        public static AccessLogEntryResponse from(RecordAccessEntry e) {
+            return new AccessLogEntryResponse(e.getId(), e.getActorUserId(), e.getActorRole(),
+                    e.getActorName(), e.getPatientId(), e.getEncounterId(),
+                    e.getAction().name(), e.isSelfAccess(), e.getAccessedAt(),
+                    e.getCorrelationId());
         }
     }
 }

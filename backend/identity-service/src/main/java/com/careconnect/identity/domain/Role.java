@@ -11,16 +11,17 @@ import java.util.UUID;
 @Table(name = "roles")
 public class Role {
 
+    /**
+     * The four roles this system actually implements. LAB_TECHNICIAN went with
+     * laboratory-service (ADR-010); RADIOLOGIST, PHARMACIST, NURSE, BILLING and
+     * SUPER_ADMIN were declared for services that were never built and had zero
+     * references anywhere — a permission model listing roles nothing enforces is
+     * worse than a short one, because it implies checks that do not exist.
+     */
     public static final String ADMIN = "ADMIN";
     public static final String DOCTOR = "DOCTOR";
     public static final String PATIENT = "PATIENT";
     public static final String STAFF = "STAFF";
-    public static final String LAB_TECHNICIAN = "LAB_TECHNICIAN";
-    public static final String RADIOLOGIST = "RADIOLOGIST";
-    public static final String PHARMACIST = "PHARMACIST";
-    public static final String NURSE = "NURSE";
-    public static final String BILLING = "BILLING";
-    public static final String SUPER_ADMIN = "SUPER_ADMIN";
 
     @Id
     @GeneratedValue

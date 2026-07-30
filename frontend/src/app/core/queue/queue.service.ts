@@ -26,6 +26,7 @@ export interface QueueEntry {
   estimatedWaitMinutes: number | null;
 }
 
+/** Full picture, including names and complaints. Authenticated requests only. */
 export interface QueueSnapshot {
   doctorId: string;
   doctorName: string;
@@ -33,6 +34,30 @@ export interface QueueSnapshot {
   averageConsultationMinutes: number;
   nowServing: QueueEntry | null;
   entries: QueueEntry[];
+  generatedAt: string;
+}
+
+/**
+ * What the public lobby board and the SSE stream carry. Redacted server-side:
+ * a token, a given name, a wait. No surname, no complaint, no patient id.
+ */
+export interface BoardEntry {
+  id: string;
+  tokenNumber: string;
+  status: QueueStatus;
+  priority: QueuePriority;
+  givenName: string;
+  position: number | null;
+  estimatedWaitMinutes: number | null;
+}
+
+export interface BoardSnapshot {
+  doctorId: string;
+  doctorName: string;
+  waiting: number;
+  averageConsultationMinutes: number;
+  nowServing: BoardEntry | null;
+  entries: BoardEntry[];
   generatedAt: string;
 }
 
@@ -49,16 +74,20 @@ export class QueueService {
   private readonly base = '/api/queue';
 
   /**
-   * Live queue over Server-Sent Events. EventSource lives outside Angular's
-   * zone, so every message is bounced back in with zone.run() — otherwise the
-   * UI updates the model and never repaints.
+   * Live queue over Server-Sent Events.
+   *
+   * The stream is unauthenticated — EventSource cannot send an Authorization
+   * header — so it only ever carries the redacted board payload. Screens that
+   * need names or complaints use this as a change signal and call console()
+   * for the real data. EventSource also lives outside Angular's zone, so every
+   * message is bounced back in with zone.run() or the UI never repaints.
    */
-  stream(doctorId: string): Observable<QueueSnapshot> {
-    return new Observable<QueueSnapshot>(subscriber => {
+  stream(doctorId: string): Observable<BoardSnapshot> {
+    return new Observable<BoardSnapshot>(subscriber => {
       const source = new EventSource(`${this.base}/stream/${doctorId}`);
 
       source.addEventListener('queue', event => {
-        const snapshot = JSON.parse((event as MessageEvent).data) as QueueSnapshot;
+        const snapshot = JSON.parse((event as MessageEvent).data) as BoardSnapshot;
         this.zone.run(() => subscriber.next(snapshot));
       });
 
@@ -70,8 +99,15 @@ export class QueueService {
     });
   }
 
-  board(doctorId: string): Observable<QueueSnapshot> {
-    return this.http.get<Envelope<QueueSnapshot>>(`${this.base}/board/${doctorId}`)
+  /** Public lobby board snapshot — same redacted shape as the stream. */
+  board(doctorId: string): Observable<BoardSnapshot> {
+    return this.http.get<Envelope<BoardSnapshot>>(`${this.base}/board/${doctorId}`)
+      .pipe(map(r => r.data));
+  }
+
+  /** Full queue for a doctor's console. Authenticated; own queue or staff. */
+  console(doctorId: string): Observable<QueueSnapshot> {
+    return this.http.get<Envelope<QueueSnapshot>>(`${this.base}/console/${doctorId}`)
       .pipe(map(r => r.data));
   }
 
@@ -79,7 +115,12 @@ export class QueueService {
     return this.http.get<Envelope<MyQueueStatus>>(`${this.base}/me`).pipe(map(r => r.data));
   }
 
-  checkIn(body: { appointmentId?: string; patientId?: string; doctorId?: string;
+  /**
+   * Join today's queue. `doctorId` is required — the server resolves the display
+   * names from it. `patientId` is honoured only for staff callers; a patient is
+   * always checked in as themselves, so sending it as a patient does nothing.
+   */
+  checkIn(body: { doctorId: string; appointmentId?: string; patientId?: string;
                   complaint?: string; priority?: QueuePriority }): Observable<QueueEntry> {
     return this.http.post<Envelope<QueueEntry>>(`${this.base}/check-in`, body)
       .pipe(map(r => r.data));

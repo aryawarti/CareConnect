@@ -1,0 +1,222 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch cancels the first — no point finishing a run
+# whose result is already stale.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (JDK 21, Testcontainers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+
+      # The point of running this here rather than trusting a laptop: GitHub's
+      # ubuntu runners have Docker, so the Testcontainers tests actually execute.
+      # Locally they are annotated `disabledWithoutDocker` and skip silently,
+      # which means a green local run proves considerably less than it looks
+      # like — and the concurrency and event-pipeline tests are exactly the ones
+      # that skip. This job is where they really run.
+      - name: Confirm Docker is available to Testcontainers
+        run: docker info --format 'Docker {{.ServerVersion}}'
+
+      - name: Build and test
+        working-directory: backend
+        run: ./mvnw --batch-mode verify
+
+      # Guard against this job going green for the same misleading reason a
+      # laptop does. Docker is present here, so nothing should skip.
+      - name: Assert no tests were skipped
+        working-directory: backend
+        run: |
+          skipped=$(grep -ho 'skipped="[0-9]*"' */target/surefire-reports/TEST-*.xml \
+                    | grep -o '[0-9]*' | awk '{n+=$1} END {print n+0}')
+          echo "Skipped tests: $skipped"
+          if [ "$skipped" -gt 0 ]; then
+            echo "::error::$skipped test(s) skipped despite Docker being available."
+            grep -l 'skipped="[1-9]' */target/surefire-reports/TEST-*.xml || true
+            exit 1
+          fi
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-surefire-reports
+          path: backend/*/target/surefire-reports/
+          retention-days: 7
+
+      # Handed to the publish job so images are built from the exact jars that
+      # were just tested, rather than rebuilt from source and hoped to match.
+      - name: Upload jars
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jars
+          path: backend/*/target/*.jar
+          retention-days: 1
+
+  frontend:
+    name: Frontend (Node 22)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+
+      # Separate from the build on purpose: tsc is the stricter check on the
+      # TypeScript itself, and its errors point at the real file rather than a
+      # bundling stage.
+      - name: Typecheck
+        working-directory: frontend
+        run: npx tsc -p tsconfig.app.json --noEmit
+
+      - name: Unit tests
+        working-directory: frontend
+        run: npm test -- --watch=false --browsers=ChromeHeadless
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          retention-days: 1
+
+  compose:
+    name: Compose config is valid
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Cheap, and catches the class of mistake that only surfaces when someone
+      # tries to start the stack: a broken anchor, or a deleted service still
+      # named in another service's depends_on.
+      - name: Validate compose files
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.prod.yml config --quiet
+          echo "compose files are valid"
+
+  publish:
+    name: Publish images to GHCR
+    needs: [backend, frontend, compose]
+    # Only for real deliveries, and only after the tests above passed. A pull
+    # request must never publish an image.
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Dockerfiles are runtime-only by design (ADR note in each): they COPY
+      # a jar or a dist folder that already exists. So CD reuses the artifacts
+      # the test jobs produced instead of rebuilding — which also guarantees the
+      # published image contains exactly what was tested.
+      - name: Download jars
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-jars
+          path: backend/
+
+      - name: Download frontend bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push all images
+        env:
+          # GHCR rejects uppercase in a repository path, and GitHub usernames
+          # may contain it.
+          OWNER: ${{ github.repository_owner }}
+          SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+          owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+          services="api-gateway config-server discovery-server identity-service \
+                    patient-service provider-service appointment-service \
+                    notification-service medical-record-service billing-service \
+                    queue-service"
+
+          push_image() {
+            local name="$1" context="$2" dockerfile="$3"
+            local repo="ghcr.io/${owner}/careconnect-${name}"
+            echo "::group::${name}"
+            docker build -t "${repo}:${SHA}" -f "${dockerfile}" "${context}"
+            docker push "${repo}:${SHA}"
+            # Moving tags, applied only after the immutable SHA tag is safely up.
+            if [ "$IS_TAG" = "true" ]; then
+              docker tag "${repo}:${SHA}" "${repo}:${REF_NAME}"
+              docker push "${repo}:${REF_NAME}"
+            else
+              docker tag "${repo}:${SHA}" "${repo}:latest"
+              docker push "${repo}:latest"
+            fi
+            echo "::endgroup::"
+          }
+
+          for svc in $services; do
+            push_image "$svc" backend "backend/${svc}/Dockerfile"
+          done
+          push_image frontend frontend frontend/Dockerfile
+
+      - name: Summarise what was published
+        env:
+          OWNER: ${{ github.repository_owner }}
+          SHA: ${{ github.sha }}
+        run: |
+          owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+          {
+            echo "### Images published"
+            echo ""
+            echo "Tag: \`${SHA}\`"
+            echo ""
+            echo "Run the published stack with:"
+            echo ""
+            echo '```bash'
+            echo "export CARECONNECT_REGISTRY=ghcr.io/${owner}"
+            echo "export CARECONNECT_TAG=${SHA}"
+            echo "docker compose -f docker-compose.prod.yml up -d"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,7 @@
 package com.careconnect.queue.api;
 
 import com.careconnect.queue.api.dto.ApiEnvelope;
+import com.careconnect.queue.api.dto.QueueDtos.BoardSnapshot;
 import com.careconnect.queue.api.dto.QueueDtos.CheckInRequest;
 import com.careconnect.queue.api.dto.QueueDtos.MyQueueStatus;
 import com.careconnect.queue.api.dto.QueueDtos.QueueEntryResponse;
@@ -9,13 +10,18 @@ import com.careconnect.queue.api.dto.QueueDtos.WalkInRequest;
 import com.careconnect.queue.application.QueueBroadcaster;
 import com.careconnect.queue.application.QueueService;
 import com.careconnect.queue.infrastructure.client.PatientClient;
+import com.careconnect.queue.infrastructure.client.ProviderClient;
 import jakarta.validation.Valid;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.MediaType;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,49 +35,112 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RequestMapping("/api/queue")
 public class QueueController {
 
+    private static final Logger log = LoggerFactory.getLogger(QueueController.class);
+
     private final QueueService service;
     private final QueueBroadcaster broadcaster;
     private final PatientClient patientClient;
+    private final ProviderClient providerClient;
 
     public QueueController(QueueService service, QueueBroadcaster broadcaster,
-                           PatientClient patientClient) {
+                           PatientClient patientClient, ProviderClient providerClient) {
         this.service = service;
         this.broadcaster = broadcaster;
         this.patientClient = patientClient;
+        this.providerClient = providerClient;
+    }
+
+    /**
+     * A DOCTOR may only read their own queue; STAFF and ADMIN run the whole
+     * clinic and may read any. The doctor id in the URL is caller-supplied, so
+     * it is never accepted as proof of identity — it is compared against the
+     * profile actually linked to the caller's account.
+     */
+    private static boolean isStaff(Authentication auth) {
+        return auth.getAuthorities().stream().anyMatch(a ->
+                a.getAuthority().equals("ROLE_STAFF") || a.getAuthority().equals("ROLE_ADMIN"));
+    }
+
+    private void requireQueueAccess(UUID doctorId, Authentication auth) {
+        if (isStaff(auth)) {
+            return;
+        }
+        if (!providerClient.me().data().id().equals(doctorId)) {
+            throw new AccessDeniedException("This queue belongs to another doctor");
+        }
     }
 
     // ---- live streams -------------------------------------------------------
 
     /**
-     * Server-Sent Events: the waiting-room board and doctor console subscribe
-     * here and receive a full snapshot on every change. Public by design — a
-     * lobby display should not need credentials, and the payload carries only
-     * token numbers and first names.
+     * Server-Sent Events for the waiting-room board. Public by design — a lobby
+     * kiosk has no credentials — so the payload is the redacted
+     * {@link com.careconnect.queue.api.dto.QueueDtos.BoardSnapshot}: token
+     * numbers, given names, waits. No surnames, no complaints.
+     *
+     * Privileged screens (the doctor console) also subscribe here, but treat an
+     * event purely as a "something changed" signal and then re-fetch
+     * {@code /console/{doctorId}} over an authenticated request. That keeps PHI
+     * off the unauthenticated channel entirely.
      */
     @GetMapping(value = "/stream/{doctorId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@PathVariable UUID doctorId) {
         SseEmitter emitter = broadcaster.subscribe(doctorId);
         try {
-            emitter.send(SseEmitter.event().name("queue").data(service.snapshot(doctorId)));
-        } catch (Exception ignored) {
-            // client vanished between subscribe and first send
+            emitter.send(SseEmitter.event().name("queue").data(service.boardSnapshot(doctorId)));
+        } catch (Exception e) {
+            // The client can vanish between subscribe and first send; that is
+            // normal, but swallowing it silently once hid a broken stream for
+            // days, so it is logged at debug rather than discarded.
+            log.debug("SSE client disconnected before the first snapshot for doctor {}", doctorId, e);
         }
         return emitter;
     }
 
+    /** Public lobby board — redacted, same projection as the stream. */
     @GetMapping("/board/{doctorId}")
-    public ApiEnvelope<QueueSnapshot> board(@PathVariable UUID doctorId) {
+    public ApiEnvelope<BoardSnapshot> board(@PathVariable UUID doctorId) {
+        return ApiEnvelope.of(service.boardSnapshot(doctorId));
+    }
+
+    /** The doctor console's full picture: names and complaints, authenticated. */
+    @GetMapping("/console/{doctorId}")
+    @PreAuthorize("hasAnyRole('DOCTOR','STAFF','ADMIN')")
+    public ApiEnvelope<QueueSnapshot> console(@PathVariable UUID doctorId, Authentication auth) {
+        requireQueueAccess(doctorId, auth);
         return ApiEnvelope.of(service.snapshot(doctorId));
     }
 
     // ---- joining ------------------------------------------------------------
 
+    /**
+     * Joining today's queue.
+     *
+     * A PATIENT always checks *themselves* in: the patientId in the body is
+     * ignored and replaced by the id resolved from their own account, the same
+     * rule booking follows. Honouring the submitted value would let any patient
+     * place any other patient into a queue. Staff check in whoever is at the desk.
+     *
+     * Names are resolved from patient-service and provider-service. They used to
+     * be the literal strings "Patient" and "Doctor" — passed through a ternary
+     * whose branches were identical — so every appointment check-in produced a
+     * queue entry displaying "Patient" on the board and the doctor's console.
+     */
     @PostMapping("/check-in")
     @PreAuthorize("hasAnyRole('STAFF','ADMIN','PATIENT')")
-    public ApiEnvelope<QueueEntryResponse> checkIn(@Valid @RequestBody CheckInRequest request) {
+    public ApiEnvelope<QueueEntryResponse> checkIn(@Valid @RequestBody CheckInRequest request,
+                                                   Authentication auth) {
+        UUID patientId = isStaff(auth)
+                ? request.patientId()
+                : patientClient.me().data().id();
+        if (patientId == null) {
+            throw new IllegalArgumentException(
+                    "patientId is required when staff check a patient in");
+        }
+        String patientName = patientClient.summary(patientId).data().fullName();
+        String doctorName = providerClient.summary(request.doctorId()).data().fullName();
         return ApiEnvelope.of(QueueEntryResponse.from(
-                service.checkIn(request, request.patientId() == null ? "Patient" : "Patient",
-                        "Doctor"), null, null));
+                service.checkIn(request, patientId, patientName, doctorName), null, null));
     }
 
     @PostMapping("/walk-in")
@@ -84,7 +153,9 @@ public class QueueController {
 
     @PostMapping("/doctor/{doctorId}/call-next")
     @PreAuthorize("hasAnyRole('DOCTOR','STAFF','ADMIN')")
-    public ApiEnvelope<QueueEntryResponse> callNext(@PathVariable UUID doctorId) {
+    public ApiEnvelope<QueueEntryResponse> callNext(@PathVariable UUID doctorId,
+                                                    Authentication auth) {
+        requireQueueAccess(doctorId, auth);
         return ApiEnvelope.of(QueueEntryResponse.from(service.callNext(doctorId), null, null));
     }
 
@@ -156,7 +227,9 @@ public class QueueController {
     @PreAuthorize("hasAnyRole('DOCTOR','STAFF','ADMIN')")
     public ApiEnvelope<List<QueueEntryResponse>> doctorDay(
             @PathVariable UUID doctorId,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            Authentication auth) {
+        requireQueueAccess(doctorId, auth);
         return ApiEnvelope.of(service.doctorDay(doctorId, date == null ? service.today() : date)
                 .stream().map(e -> QueueEntryResponse.from(e, null, null)).toList());
     }

@@ -36,7 +36,7 @@ public class EventConsumer {
         this.objectMapper = objectMapper;
     }
 
-    @KafkaListener(topics = {"appointment.events", "patient.events", "billing.events", "lab.events"},
+    @KafkaListener(topics = {"appointment.events", "patient.events", "billing.events"},
                    groupId = "notification-service")
     @Transactional
     public void onEvent(String message) throws Exception {

@@ -27,7 +27,6 @@ Each Feign client gets: 2s connect / 3s read timeouts, circuit breaker (Resilien
 | `billing.events` | billing-service | InvoiceIssued, InvoicePaid, InvoiceVoided | notification |
 | `patient.events` | patient-service | PatientRegistered (staff-created AND self-onboarded profiles) | notification |
 | `queue.events` | queue-service | PatientCheckedIn, PatientCalled, ConsultationStarted, **ConsultationCompleted**, PatientSkipped, PatientLeft | appointment-service (completes the visit, which cascades to records/billing/notification) |
-| `lab.events` | laboratory-service | LabRequested, SampleCollected, LabResultCritical, ReportUploaded | billing (raises the lab charge on LabRequested, idempotently), medical-record (links the released report to the encounter on ReportUploaded), notification (critical-value alert to the doctor; report-ready email to the patient) |
 
 Partitioning key: aggregate ID (`appointmentId` / `invoiceId`) → per-aggregate ordering, which is the only ordering we need. 3 partitions per topic locally.
 
@@ -49,6 +48,19 @@ Events are **facts, past tense, self-contained** — payload carries what consum
 - **Idempotency:** consumers record `eventId` in a `processed_events` table in the same DB transaction as their side effect; duplicates are skipped. Kafka is at-least-once — duplicates are a certainty, not an edge case.
 - **Retries & DLT:** 3 retries with backoff, then dead-letter topic (`<topic>.DLT`). DLT monitoring is a troubleshooting-doc item.
 - **Publishing:** events are written to an `outbox_events` table inside the business transaction and relayed to Kafka by a scheduled job (ADR-009). The event and the state change share a transaction's fate — no lost events on crash. The relay uses `FOR UPDATE SKIP LOCKED` (multi-instance safe) and exports a `careconnect.outbox.pending` gauge.
+
+### Relay failure policy
+
+The relay polls `where published_at is null order by created_at`, so **whatever is at the head of that queue can block everything behind it**. Two failure modes have to be told apart, and conflating them breaks the outbox in one direction or the other:
+
+| Failure | Cause | Response | Why |
+|---|---|---|---|
+| Anything Kafka marks `RetriableException` — timeouts, network errors, no leader | The broker | Stop the batch, retry next tick, **do not** count an attempt | Counting here means a long outage burns the retry budget and abandons events that were never faulty. That is the exact data loss the outbox exists to prevent. |
+| Record-specific — payload too large, topic rejected, serialization failure | This one event | Count an attempt, continue to the next event | One poison payload must not hold every later event hostage. Stopping the batch here would stall the stream indefinitely. |
+
+After `careconnect.outbox.max-attempts` (default 10), an event is excluded from polling and left in `outbox_events` with its `last_error`. **The table is its own dead-letter store** — nothing is deleted or silently dropped, and the row can be inspected, fixed and re-armed by clearing `attempts`. The `careconnect.outbox.dead` gauge should sit flat at zero; non-zero means domain events are not reaching consumers and needs a human.
+
+Interruption is handled separately: an `InterruptedException` (graceful shutdown) restores the thread's interrupt flag and stops promptly, leaving the remaining rows pending for the next start. Restoring that flag on *any* failure — as an earlier version did — marks the scheduler thread interrupted and makes unrelated later work on it fail for no visible reason.
 
 ## Correlation
 Gateway generates `X-Correlation-Id` per request; propagated via Feign interceptor and event envelope; logged by every service. One user action → one traceable thread through the whole system.

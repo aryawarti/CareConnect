@@ -45,10 +45,6 @@ spring:
           uri: lb://queue-service
           predicates:
             - Path=/api/queue/**
-        - id: laboratory
-          uri: lb://laboratory-service
-          predicates:
-            - Path=/api/lab/**
         # Platform demo route: proves Eureka-resolved (lb://) routing end-to-end
         # before any business service exists. Replaced by real routes per phase.
         - id: platform-config-health
@@ -79,6 +75,20 @@ careconnect:
   jwt:
     secret: ${JWT_SECRET:careconnect-local-dev-secret-key-please-override-1234}
   gateway:
+    # Per-IP budgets for the endpoints reachable without a token. Values are
+    # requests/minute, which is also the burst size.
+    #
+    # Sized above real usage, far below anything useful for guessing passwords:
+    # the first-run seeder registers 7 users and logs in ~12 times within a few
+    # seconds, and must never be throttled or the demo data comes up partial.
+    # Complementary control (not built here): per-account lockout in
+    # identity-service, which is what stops a slow attack on one known email.
+    rate-limit:
+      enabled: true
+      rules:
+        "[/api/auth/login]": 20
+        "[/api/auth/register]": 20
+        "[/api/auth/refresh]": 60
     # Requests matching these patterns pass without a JWT. Everything else is 401'd
     # at the edge. Keep this list short and reviewed — it is the public surface.
     public-paths: >-

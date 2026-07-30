@@ -12,6 +12,7 @@ import com.careconnect.provider.api.dto.DoctorDtos.ExceptionResponse;
 import com.careconnect.provider.api.dto.DoctorDtos.ReplaceAvailabilityRequest;
 import com.careconnect.provider.api.dto.DoctorDtos.SlotResponse;
 import com.careconnect.provider.api.dto.DoctorDtos.UpdateDoctorRequest;
+import com.careconnect.provider.api.dto.DoctorSummary;
 import com.careconnect.provider.application.ProviderService;
 import com.careconnect.provider.domain.Department;
 import jakarta.validation.Valid;
@@ -149,6 +150,18 @@ public class ProviderController {
     public ResponseEntity<Void> deactivate(@PathVariable UUID id) {
         service.deactivate(id);
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Name-only view for other services (any authenticated caller), mirroring
+     * patient-service's /api/patients/{id}/summary. Carries no fee and no
+     * registration details, so it is safe for a patient to read — which matters
+     * because a patient checking themselves in needs their doctor's name.
+     */
+    @GetMapping("/doctors/{id}/summary")
+    @PreAuthorize("isAuthenticated()")
+    public ApiEnvelope<DoctorSummary> summary(@PathVariable UUID id) {
+        return ApiEnvelope.of(DoctorSummary.from(service.get(id)));
     }
 
     /** Internal one-call validation view for appointment-service (any authenticated). */

@@ -7,4 +7,3 @@ CREATE DATABASE careconnect_medical_record;
 CREATE DATABASE careconnect_billing;
 CREATE DATABASE careconnect_notification;
 CREATE DATABASE careconnect_queue;
-CREATE DATABASE careconnect_laboratory;

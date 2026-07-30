@@ -37,14 +37,6 @@ public final class NotificationComposer {
                     "appointment-completed", "Thanks for visiting",
                     "Hi %s, thank you for visiting %s. Your invoice will follow shortly."
                             .formatted(patient, doctor), eventId));
-            case "ReportUploaded" -> Optional.of(new Notification(recipient,
-                    "lab-report-ready", "Your lab report is ready",
-                    "Hi %s, your laboratory report (%s) has been verified and is ready to view."
-                            .formatted(patient, str(payload, "orderNumber")), eventId));
-            case "LabResultCritical" -> Optional.of(new Notification(str(payload, "doctorId"),
-                    "lab-critical", "CRITICAL lab result needs review",
-                    "A critical result is available on order %s for patient %s. Please review immediately."
-                            .formatted(str(payload, "orderNumber"), patient), eventId));
             case "InvoiceIssued" -> Optional.of(new Notification(recipient,
                     "invoice-issued", "Your invoice %s is ready".formatted(str(payload, "invoiceNumber")),
                     "Hi %s, invoice %s for your visit with %s is ready. Amount due: %s."

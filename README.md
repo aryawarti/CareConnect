@@ -43,19 +43,31 @@ flowchart TB
     GW --> APT[appointment :8084]
     GW --> MED[medical-record :8085]
     GW --> BIL[billing :8086]
+    GW --> QUE[queue :8088]
     APT -.->|Feign + circuit breaker| PAT
     APT -.->|Feign + circuit breaker| PRV
+    QUE -.->|Feign| PAT
     APT ==> K[(Kafka)]
     BIL ==> K
     PAT ==> K
+    QUE ==> K
     K ==> NOT[notification :8087]
     K ==> MED
     K ==> BIL
+    K ==> APT
     EUR[Eureka :8761] -.- GW
     CFG[Config :8888] -.- GW
 ```
 
-**7 business services + 3 platform services + 1 SPA**, each business service owning its own database. Full rationale: [High-Level Design](docs/architecture/high-level-design.md) · [Service Catalog](docs/architecture/service-catalog.md) · [ADRs](docs/adr/README.md).
+**8 business services + 3 platform services + 1 SPA**, each business service owning its own
+database. Only the gateway and the SPA publish a port; the services sit on the internal
+network behind them. Full rationale: [High-Level Design](docs/architecture/high-level-design.md) ·
+[Service Catalog](docs/architecture/service-catalog.md) · [ADRs](docs/adr/README.md).
+
+A ninth service — `laboratory-service` — was built and then **deleted**
+([ADR-010](docs/adr/adr-010-remove-laboratory-service.md)). It contradicted the scope
+statement below it, was the least-tested service in the repository, and split the demo
+into two competing stories. Working code is not a reason to keep code.
 
 ## Engineering decisions worth reading
 
@@ -65,7 +77,10 @@ flowchart TB
 | **Transactional outbox** | Events share a transaction with the state that caused them; a scheduled relay publishes using `FOR UPDATE SKIP LOCKED` ([ADR-009](docs/adr/adr-009-transactional-outbox.md)) |
 | **Exactly-once *processing*** | Kafka is at-least-once; consumers write `eventId` to `processed_events` in the same transaction as the side effect |
 | **Sync fails fast, async never blocks** | Booking 503s if patient/provider can't be validated; billing/notification outages are invisible to the clinic ([ADR-004](docs/adr/adr-004-sync-vs-async.md)) |
-| **Authorization by relationship, not just role** | A DOCTOR token is not a skeleton key: the service checks *treating* doctor, *owning* patient ([security](docs/architecture/security.md)) |
+| **The chart remembers who opened it** | Every read of clinical data writes an append-only `record_access_log` row, and the **patient can see their own trail**. Access control decides who *may* read; this records who *did* — the control a clinical system is actually audited on. Fail-closed: the log write shares the read's transaction, so a chart that can't be recorded as read isn't served |
+| **Authorization by relationship, not just role** | A DOCTOR token is not a skeleton key: reading one chart, listing a patient's whole history, and opening a queue console all check the *treating* relationship, not the role ([security](docs/architecture/security.md)) |
+| **The gateway's word is verified, not assumed** | Services authorize from gateway-set `X-User-*` headers, so the gateway attaches a shared secret and services *strip* identity headers arriving without it — reaching a service directly can't forge an admin |
+| **The lobby board is redacted server-side** | The public waiting-room screen and its SSE stream carry token numbers and given names only. Never surnames, never presenting complaints — filtering in the browser protects nobody |
 | **Clinical records are append-only** | Signed encounters are immutable; corrections create amendments preserving the previous text |
 | **Money is snapshotted** | Invoice amounts come from the fee captured at booking — later price changes can't rewrite history |
 | **Refresh-token rotation with replay detection** | A replayed refresh token revokes the session; the SPA refreshes single-flight so it never trips its own defence |
@@ -85,10 +100,17 @@ flowchart TB
 
 ```bash
 cp .env.example .env
-cd backend  && mvn -q package -DskipTests && cd ..
+cd backend  && ./mvnw -q package -DskipTests && cd ..   # mvnw: no local Maven needed
 cd frontend && npm install && npm run build && cd ..
 docker compose --profile platform up -d --build
 ```
+
+Only the gateway (`:8080`) and the SPA (`:4300`) are published; the services sit on
+the compose network behind them, because their authorization trusts headers the
+gateway sets. Compose runs with the repository's public default secrets and says so
+by setting `ALLOW_INSECURE_DEFAULTS=true` — without it, services **refuse to start**
+on a known secret, so a deployment can't quietly inherit one. Put real values in
+`.env` and drop that flag for anything that isn't a laptop.
 
 The stack seeds itself: an administrator account is created, then a seeder builds a
 working clinic **through the public API** — 5 doctors with weekly schedules, 6 patients,
@@ -114,8 +136,15 @@ Then follow [docs/operations/demo.md](docs/operations/demo.md) — it proves eac
 Unit tests for domain rules, `@WebMvcTest` slices for API contracts and authorization, and Testcontainers integration tests against **real Postgres and Kafka** — including the exclusion constraint under concurrent booking, replayed-event idempotency, and the event→encounter/invoice pipelines.
 
 ```bash
-cd backend && mvn -q verify        # Docker required; container tests skip without it
+cd backend && ./mvnw verify        # Docker optional, but see below
 ```
+
+**Read the `Skipped` count, not just `BUILD SUCCESS`.** Every Testcontainers test is
+annotated `disabledWithoutDocker`, so without Docker running, 15 of them skip
+silently — including all the concurrency and event-pipeline tests, which are the ones
+worth having. Known coverage gaps (queue-service has none) are listed in
+[the testing chapter](docs/srs/12-deployment-and-testing.md#known-gaps-in-coverage)
+rather than left for you to discover.
 
 ## Documentation
 
@@ -131,3 +160,11 @@ Architecture-first, written and maintained alongside the code — [start here](d
 ## Honest limitations
 
 Not HIPAA-certified; no field-level encryption at rest; no mTLS between services; payments are simulated; Kubernetes, CDC-based outbox (Debezium), and a bundled Grafana stack are documented as next steps rather than built. Each is a recorded decision with reasoning — see the ADRs and the "deliberately not done" notes throughout the docs.
+
+Specifically still missing, and known:
+
+- **The access log is append-only by construction, not by permission.** Nothing in the code updates or deletes a row and the entity has no setters, but the database user could. The proper lock is a role with INSERT/SELECT and no UPDATE/DELETE on that table.
+- **No per-account lockout.** Auth endpoints are rate-limited per client address, which slows broad guessing but not a slow, targeted attack on one known email.
+- **Rate limiting is per gateway instance** (in-memory token buckets). Correct for a single gateway; a second replica would each allow the full budget.
+- **CSP allows `'unsafe-inline'` for styles**, because Angular and Material inject inline styles. Scripts are `'self'` with no exemption.
+- **queue-service has no tests.**

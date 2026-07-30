@@ -1,6 +1,7 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, inject } from '@angular/core';
 import { CurrencyPipe, DatePipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
+import { map } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
@@ -9,18 +10,27 @@ import { BillingService } from '../../core/billing/billing.service';
 import { PatientsService } from '../../core/patients/patients.service';
 import { ProvidersService } from '../../core/providers/providers.service';
 import { Appointment } from '../../core/appointments/appointment.models';
-import { Invoice } from '../../core/billing/billing.models';
-import { StatComponent, EmptyStateComponent, DonutComponent, BarChartComponent }
-  from '../../shared/ui.components';
+import { asyncResource } from '../../core/http/async-resource';
+import { humanizeError } from '../../core/http/http-status';
+import { StatComponent, EmptyStateComponent, DonutComponent, BarChartComponent,
+         ErrorPanelComponent } from '../../shared/ui.components';
 
 /** Clinic-wide operational view for staff and admins. */
 @Component({
   selector: 'cc-staff-dashboard',
   standalone: true,
   imports: [CurrencyPipe, DatePipe, RouterLink, MatButtonModule, MatIconModule, MatSnackBarModule,
-            StatComponent, EmptyStateComponent, DonutComponent, BarChartComponent],
+            StatComponent, EmptyStateComponent, DonutComponent, BarChartComponent,
+            ErrorPanelComponent],
   template: `
     <div class="cc-page">
+      @if (loadError(); as problem) {
+        <div style="margin-bottom:18px">
+          <cc-error [message]="problem + ' Figures below may be incomplete.'"
+                    (retry)="reloadAll()" />
+        </div>
+      }
+
       <div class="cc-page-head">
         <div>
           <h1>Clinic today</h1>
@@ -129,12 +139,40 @@ export class StaffDashboardComponent {
   private readonly snackBar = inject(MatSnackBar);
 
   readonly today = new Date();
-  readonly dayAppointments = signal<Appointment[]>([]);
-  readonly issued = signal<Invoice[]>([]);
-  readonly paid = signal<Invoice[]>([]);
-  readonly patientCount = signal(0);
-  readonly applications = signal<unknown[]>([]);
-  readonly doctorCount = signal(0);
+
+  /**
+   * Six independent requests. Each is a resource so a failure is reported rather
+   * than silently rendering as a zero — a staff member reading "0 outstanding"
+   * because billing-service was unreachable would draw exactly the wrong
+   * conclusion about the day's collections.
+   *
+   * Exposed as computeds with the names the template already used, so the states
+   * were added without rewriting the markup.
+   */
+  private readonly dayResource = asyncResource(() =>
+    this.appointments.clinicDay(new Date().toISOString().slice(0, 10)));
+  private readonly issuedResource = asyncResource(() =>
+    this.billing.byStatus('ISSUED', 0, 50).pipe(map(r => r.data)));
+  private readonly paidResource = asyncResource(() =>
+    this.billing.byStatus('PAID', 0, 50).pipe(map(r => r.data)));
+  private readonly patientCountResource = asyncResource(() =>
+    this.patients.search('', 0, 1).pipe(map(r => r.meta.totalElements)));
+  private readonly doctorCountResource = asyncResource(() =>
+    this.providers.directory('', 0, 1).pipe(map(r => r.meta.totalElements)));
+  private readonly applicationsResource = asyncResource(() => this.providers.applications());
+
+  readonly dayAppointments = computed(() => this.dayResource.value() ?? []);
+  readonly issued = computed(() => this.issuedResource.value() ?? []);
+  readonly paid = computed(() => this.paidResource.value() ?? []);
+  readonly patientCount = computed(() => this.patientCountResource.value() ?? 0);
+  readonly doctorCount = computed(() => this.doctorCountResource.value() ?? 0);
+  readonly applications = computed(() => this.applicationsResource.value() ?? []);
+
+  readonly loading = computed(() => this.dayResource.loading() || this.issuedResource.loading());
+  /** First failure across the six, so an incomplete day is never presented as fact. */
+  readonly loadError = computed(() =>
+    this.dayResource.error() ?? this.issuedResource.error() ?? this.paidResource.error()
+    ?? this.patientCountResource.error() ?? this.doctorCountResource.error());
 
   readonly pending = computed(() =>
     this.dayAppointments().filter(a => a.status === 'REQUESTED'));
@@ -161,27 +199,22 @@ export class StaffDashboardComponent {
     { label: 'Collected', value: Math.round(this.collectedTotal()) },
   ]);
 
-  constructor() {
-    const date = new Date().toISOString().slice(0, 10);
-    this.appointments.clinicDay(date).subscribe(a => this.dayAppointments.set(a));
-    this.billing.byStatus('ISSUED', 0, 50).subscribe(r => this.issued.set(r.data));
-    this.billing.byStatus('PAID', 0, 50).subscribe(r => this.paid.set(r.data));
-    this.patients.search('', 0, 1).subscribe(r => this.patientCount.set(r.meta.totalElements));
-    this.providers.directory('', 0, 1).subscribe(r => this.doctorCount.set(r.meta.totalElements));
-    this.providers.applications().subscribe({
-      next: list => this.applications.set(list),
-      error: () => this.applications.set([])
-    });
+  reloadAll(): void {
+    this.dayResource.reload();
+    this.issuedResource.reload();
+    this.paidResource.reload();
+    this.patientCountResource.reload();
+    this.doctorCountResource.reload();
+    this.applicationsResource.reload();
   }
 
   confirm(appointment: Appointment): void {
     this.appointments.transition(appointment.id, 'confirmation').subscribe({
       next: () => {
         this.snackBar.open(`Confirmed ${appointment.patientName}`, 'OK', { duration: 3000 });
-        const date = new Date().toISOString().slice(0, 10);
-        this.appointments.clinicDay(date).subscribe(a => this.dayAppointments.set(a));
+        this.dayResource.reload();
       },
-      error: err => this.snackBar.open(err?.error?.detail ?? 'Failed', 'OK', { duration: 4000 })
+      error: err => this.snackBar.open(humanizeError(err), 'OK', { duration: 5000 })
     });
   }
 }

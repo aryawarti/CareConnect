@@ -2,9 +2,22 @@
 # "platform" profile: docker compose --profile platform up -d --build
 name: careconnect
 
+# NOTE: every application service below sets `stop_grace_period: 30s`. Boot is
+# configured for graceful shutdown with a 25s drain
+# (spring.lifecycle.timeout-per-shutdown-phase in the config-repo), and Docker's
+# default grace is 10s — so without this it would SIGKILL mid-drain and the
+# graceful setting would be decorative.
 x-service-env: &service-env
   CONFIG_SERVER_URL: http://config-server:8888
   EUREKA_URL: http://discovery-server:8761/eureka
+  # Proves a request came through the gateway. Services strip X-User-* headers
+  # that arrive without it, so bypassing the gateway cannot forge an identity.
+  GATEWAY_SHARED_SECRET: ${GATEWAY_SHARED_SECRET:-careconnect-local-gateway-secret-change-me}
+  # This file ships the repository's public default secrets so the stack runs
+  # with zero setup, so it must say so out loud: services refuse to start on a
+  # known-public secret unless explicitly permitted. Set real secrets in .env
+  # and drop this line for anything that is not a laptop.
+  ALLOW_INSECURE_DEFAULTS: ${ALLOW_INSECURE_DEFAULTS:-true}
   # Local dev on a laptop runs ~10 JVMs at once. C1-only JIT cuts startup
   # dramatically (peak throughput is irrelevant here), and capping heap per
   # service stops the containers collectively exhausting Docker's memory.
@@ -27,7 +40,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-careconnect}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-careconnect}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Loopback-only: psql from the host still works, but the database is not
+      # offered to the local network.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
@@ -41,7 +56,7 @@ services:
     image: apache/kafka:3.8.0
     container_name: careconnect-kafka
     ports:
-      - "${KAFKA_PORT:-9092}:9092"
+      - "127.0.0.1:${KAFKA_PORT:-9092}:9092"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -62,9 +77,12 @@ services:
       dockerfile: config-server/Dockerfile
     container_name: careconnect-config-server
     mem_limit: 512m
+    stop_grace_period: 30s
     profiles: ["platform"]
     ports:
-      - "8888:8888"
+      # Loopback-only: the config server serves every service's configuration,
+      # including secrets, and has no authentication of its own.
+      - "127.0.0.1:8888:8888"
     environment:
       EUREKA_URL: http://discovery-server:8761/eureka
     healthcheck:
@@ -80,9 +98,10 @@ services:
       dockerfile: discovery-server/Dockerfile
     container_name: careconnect-discovery-server
     mem_limit: 512m
+    stop_grace_period: 30s
     profiles: ["platform"]
     ports:
-      - "8761:8761"
+      - "127.0.0.1:8761:8761"
     environment:
       CONFIG_SERVER_URL: http://config-server:8888
     depends_on:
@@ -101,6 +120,7 @@ services:
       dockerfile: api-gateway/Dockerfile
     container_name: careconnect-api-gateway
     mem_limit: 512m
+    stop_grace_period: 30s
     profiles: ["platform"]
     ports:
       - "8080:8080"
@@ -123,9 +143,14 @@ services:
       dockerfile: identity-service/Dockerfile
     container_name: careconnect-identity-service
     mem_limit: 640m
+    stop_grace_period: 30s
     profiles: ["platform"]
-    ports:
-      - "8081:8081"
+    # No published port. Business services are reachable only from inside the
+    # compose network, via the gateway. Publishing them to the host was a full
+    # authentication bypass: services trust gateway-set X-User-* headers, so
+    # `curl -H "X-User-Roles: ADMIN" localhost:8081/...` was admin access.
+    # Debugging a single service: `docker compose exec api-gateway wget -qO- \
+    # http://identity-service:8081/actuator/health`, or add a temporary mapping.
     environment:
       <<: [*service-env, *db-env]
       JWT_SECRET: ${JWT_SECRET:-careconnect-local-dev-secret-key-please-override-1234}
@@ -151,9 +176,8 @@ services:
       dockerfile: patient-service/Dockerfile
     container_name: careconnect-patient-service
     mem_limit: 640m
+    stop_grace_period: 30s
     profiles: ["platform"]
-    ports:
-      - "8082:8082"
     environment:
       <<: [*service-env, *db-env]
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
@@ -177,9 +201,8 @@ services:
       dockerfile: provider-service/Dockerfile
     container_name: careconnect-provider-service
     mem_limit: 640m
+    stop_grace_period: 30s
     profiles: ["platform"]
-    ports:
-      - "8083:8083"
     environment:
       <<: [*service-env, *db-env]
     depends_on:
@@ -200,9 +223,8 @@ services:
       dockerfile: appointment-service/Dockerfile
     container_name: careconnect-appointment-service
     mem_limit: 640m
+    stop_grace_period: 30s
     profiles: ["platform"]
-    ports:
-      - "8084:8084"
     environment:
       <<: [*service-env, *db-env]
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
@@ -226,9 +248,8 @@ services:
       dockerfile: notification-service/Dockerfile
     container_name: careconnect-notification-service
     mem_limit: 640m
+    stop_grace_period: 30s
     profiles: ["platform"]
-    ports:
-      - "8087:8087"
     environment:
       <<: [*service-env, *db-env]
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
@@ -252,9 +273,8 @@ services:
       dockerfile: medical-record-service/Dockerfile
     container_name: careconnect-medical-record-service
     mem_limit: 640m
+    stop_grace_period: 30s
     profiles: ["platform"]
-    ports:
-      - "8085:8085"
     environment:
       <<: [*service-env, *db-env]
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
@@ -278,9 +298,8 @@ services:
       dockerfile: billing-service/Dockerfile
     container_name: careconnect-billing-service
     mem_limit: 640m
+    stop_grace_period: 30s
     profiles: ["platform"]
-    ports:
-      - "8086:8086"
     environment:
       <<: [*service-env, *db-env]
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
@@ -299,19 +318,16 @@ services:
       start_period: 210s
 
 
-  # One-shot demo seeder: populates a realistic clinic through the public API
-  # (so events fire and records/invoices are produced by the system itself).
-  # Idempotent — safe to re-run; exits immediately if already seeded.
-  #   docker compose --profile platform --profile demo up -d
+  # Live OPD queue: tokens, priority ordering, and the SSE stream the waiting-room
+  # board and doctor console subscribe to.
   queue-service:
     build:
       context: ./backend
       dockerfile: queue-service/Dockerfile
     container_name: careconnect-queue-service
     mem_limit: 640m
+    stop_grace_period: 30s
     profiles: ["platform"]
-    ports:
-      - "8088:8088"
     environment:
       <<: [*service-env, *db-env]
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
@@ -333,38 +349,6 @@ services:
   # One-shot demo seeder: populates a realistic clinic through the public API
   # (so events fire and records/invoices are produced by the system itself).
   # Idempotent — safe to re-run; exits immediately if already seeded.
-  #   docker compose --profile platform --profile demo up -d
-  laboratory-service:
-    build:
-      context: ./backend
-      dockerfile: laboratory-service/Dockerfile
-    container_name: careconnect-laboratory-service
-    mem_limit: 640m
-    profiles: ["platform"]
-    ports:
-      - "8089:8089"
-    environment:
-      <<: [*service-env, *db-env]
-      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
-    depends_on:
-      postgres:
-        condition: service_healthy
-      kafka:
-        condition: service_started
-      discovery-server:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8089/actuator/health/readiness"]
-      interval: 10s
-      timeout: 3s
-      retries: 30
-      start_period: 210s
-
-
-  # One-shot demo seeder: populates a realistic clinic through the public API
-  # (so events fire and records/invoices are produced by the system itself).
-  # Idempotent — safe to re-run; exits immediately if already seeded.
-  #   docker compose --profile platform --profile demo up -d
   seeder:
     image: python:3.12-alpine
     container_name: careconnect-seeder

@@ -1,5 +1,6 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
+import { HttpErrorResponse } from '@angular/common/http';
 import { RouterLink } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -10,16 +11,24 @@ import { RecordsService } from '../../core/records/records.service';
 import { Appointment } from '../../core/appointments/appointment.models';
 import { Doctor } from '../../core/providers/provider.models';
 import { Encounter } from '../../core/records/record.models';
-import { StatComponent, EmptyStateComponent } from '../../shared/ui.components';
+import { humanizeError } from '../../core/http/http-status';
+import { StatComponent, EmptyStateComponent, ErrorPanelComponent } from '../../shared/ui.components';
 
 /** A doctor's working day: who's coming, and which charts still need signing. */
 @Component({
   selector: 'cc-doctor-dashboard',
   standalone: true,
   imports: [DatePipe, RouterLink, MatButtonModule, MatIconModule, MatSnackBarModule,
-            StatComponent, EmptyStateComponent],
+            StatComponent, EmptyStateComponent, ErrorPanelComponent],
   template: `
     <div class="cc-page">
+      @if (loadError(); as problem) {
+        <div style="margin-bottom:18px">
+          <cc-error [message]="problem + ' Some of today’s information may be missing.'"
+                    (retry)="reloadAll()" />
+        </div>
+      }
+
       @if (needsApplication()) {
         <div class="cc-card" style="border-left:4px solid var(--cc-warn);margin-bottom:18px">
           <div class="cc-row">
@@ -186,26 +195,55 @@ export class DoctorDashboardComponent {
   readonly requests = signal<Appointment[]>([]);
   /** DOCTOR account with no provider profile yet — they must apply first. */
   readonly needsApplication = signal(false);
+  /**
+   * A real failure, as opposed to an empty result. Shown as a banner rather than
+   * per-card because this screen loads four things and any of them failing means
+   * the day shown is incomplete — which a doctor needs told, not hidden.
+   */
+  readonly loadError = signal<string | null>(null);
   readonly openCharts = computed(() => this.encounters().filter(e => e.status === 'OPEN'));
   readonly signedCount = computed(() =>
     this.encounters().filter(e => e.status !== 'OPEN').length);
 
   constructor() {
+    this.reloadAll();
+  }
+
+  reloadAll(): void {
+    this.loadError.set(null);
     this.providers.me().subscribe({
       next: doctor => {
         this.profile.set(doctor);
         this.loadDay(doctor.id);
       },
-      error: () => this.needsApplication.set(true)
+      error: (err: HttpErrorResponse) => {
+        // Only a 404 means "this account has no doctor profile yet". Treating
+        // every failure as one sent a fully-onboarded doctor to the credentials
+        // form whenever provider-service was briefly unavailable.
+        if (err.status === 404) {
+          this.needsApplication.set(true);
+        } else {
+          this.loadError.set(humanizeError(err));
+        }
+      }
     });
-    this.recordsApi.doctorEncounters(0, 50).subscribe(r => this.encounters.set(r.data));
+    this.reloadEncounters();
     this.loadRequests();
+  }
+
+  private reloadEncounters(): void {
+    this.recordsApi.doctorEncounters(0, 50).subscribe({
+      next: r => this.encounters.set(r.data),
+      error: err => this.loadError.set(humanizeError(err))
+    });
   }
 
   private loadRequests(): void {
     this.appointments.doctorRequests().subscribe({
       next: list => this.requests.set(list),
-      error: () => this.requests.set([])
+      // Was `set([])`, which rendered a failed request as "no pending requests" —
+      // so a doctor could silently miss bookings waiting on their decision.
+      error: err => this.loadError.set(humanizeError(err))
     });
   }
 
@@ -221,14 +259,16 @@ export class DoctorDashboardComponent {
         this.loadRequests();
         if (this.profile()) { this.loadDay(this.profile()!.id); }
       },
-      error: err => this.snackBar.open(err?.error?.detail ?? 'Action failed', 'OK',
-        { duration: 4000 })
+      error: err => this.snackBar.open(humanizeError(err), 'OK', { duration: 5000 })
     });
   }
 
   private loadDay(doctorId: string): void {
     const date = new Date().toISOString().slice(0, 10);
-    this.appointments.doctorDay(doctorId, date).subscribe(a => this.todayList.set(a));
+    this.appointments.doctorDay(doctorId, date).subscribe({
+      next: a => this.todayList.set(a),
+      error: err => this.loadError.set(humanizeError(err))
+    });
   }
 
   nextPatientHint(): string {
@@ -240,12 +280,21 @@ export class DoctorDashboardComponent {
   complete(appointment: Appointment): void {
     this.appointments.transition(appointment.id, 'completion').subscribe({
       next: () => {
-        this.snackBar.open('Visit completed — chart created', 'OK', { duration: 3000 });
+        // "being created", not "created": the chart is opened by
+        // medical-record-service consuming AppointmentCompleted, so it does not
+        // exist the moment this call returns. That is the eventual consistency
+        // the event-driven design buys, surfacing in the UI — so the message
+        // says so rather than claiming something that isn't true yet.
+        this.snackBar.open('Visit completed — the chart is being created', 'OK',
+          { duration: 3500 });
         if (this.profile()) { this.loadDay(this.profile()!.id); }
-        setTimeout(() =>
-          this.recordsApi.doctorEncounters(0, 50).subscribe(r => this.encounters.set(r.data)), 1500);
+        // Refresh now and once more shortly after. Two bounded attempts beats a
+        // single guessed delay: if the event is still in flight the first read
+        // misses it, and the doctor can always reload.
+        this.reloadEncounters();
+        setTimeout(() => this.reloadEncounters(), 2000);
       },
-      error: err => this.snackBar.open(err?.error?.detail ?? 'Failed', 'OK', { duration: 4000 })
+      error: err => this.snackBar.open(humanizeError(err), 'OK', { duration: 5000 })
     });
   }
 }

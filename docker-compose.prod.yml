@@ -1,0 +1,205 @@
+# Run CareConnect from published images instead of building locally.
+#
+# This is what the CD pipeline's output is for: every push to main publishes an
+# image per service to GHCR, tagged with the commit SHA, and this file runs them.
+#
+#   export CARECONNECT_REGISTRY=ghcr.io/<owner>
+#   export CARECONNECT_TAG=<commit-sha>        # or 'latest'
+#   cp .env.example .env                       # then put real secrets in it
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Differences from docker-compose.yml, all deliberate:
+#   - images are pulled, never built, so what runs is exactly what was tested;
+#   - ALLOW_INSECURE_DEFAULTS is NOT set, so the services refuse to start unless
+#     you supply real secrets (that is the point of the guard);
+#   - no seeder, because seeding demo patients into a real deployment is wrong.
+name: careconnect
+
+x-image-tag: &tag ${CARECONNECT_TAG:-latest}
+
+x-service-env: &service-env
+  CONFIG_SERVER_URL: http://config-server:8888
+  EUREKA_URL: http://discovery-server:8761/eureka
+  GATEWAY_SHARED_SECRET: ${GATEWAY_SHARED_SECRET:?set a real value in .env}
+  JAVA_TOOL_OPTIONS: >-
+    -XX:MaxRAMPercentage=70
+    -Djava.security.egd=file:/dev/./urandom
+
+x-db-env: &db-env
+  POSTGRES_HOST: postgres
+  POSTGRES_USER: ${POSTGRES_USER:?set a real value in .env}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a real value in .env}
+
+x-jwt-env: &jwt-env
+  JWT_SECRET: ${JWT_SECRET:?set a real value in .env}
+
+x-defaults: &defaults
+  restart: unless-stopped
+  stop_grace_period: 30s
+
+services:
+  postgres:
+    <<: *defaults
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-careconnect}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    <<: *defaults
+    image: apache/kafka:3.8.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  config-server:
+    <<: *defaults
+    image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-config-server:${CARECONNECT_TAG:-latest}
+    environment:
+      EUREKA_URL: http://discovery-server:8761/eureka
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8888/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 90s
+
+  discovery-server:
+    <<: *defaults
+    image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-discovery-server:${CARECONNECT_TAG:-latest}
+    environment:
+      CONFIG_SERVER_URL: http://config-server:8888
+    depends_on:
+      config-server: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8761/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 90s
+
+  api-gateway:
+    <<: *defaults
+    image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-api-gateway:${CARECONNECT_TAG:-latest}
+    environment:
+      <<: [*service-env, *jwt-env]
+    depends_on:
+      discovery-server: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health/readiness"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 120s
+
+  identity-service:
+    <<: *defaults
+    image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-identity-service:${CARECONNECT_TAG:-latest}
+    environment:
+      <<: [*service-env, *db-env, *jwt-env]
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@careconnect.local}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?set a real admin password in .env}
+    depends_on:
+      postgres: { condition: service_healthy }
+      discovery-server: { condition: service_healthy }
+
+  patient-service:
+    <<: *defaults
+    image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-patient-service:${CARECONNECT_TAG:-latest}
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres: { condition: service_healthy }
+      discovery-server: { condition: service_healthy }
+
+  provider-service:
+    <<: *defaults
+    image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-provider-service:${CARECONNECT_TAG:-latest}
+    environment:
+      <<: [*service-env, *db-env]
+    depends_on:
+      postgres: { condition: service_healthy }
+      discovery-server: { condition: service_healthy }
+
+  appointment-service:
+    <<: *defaults
+    image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-appointment-service:${CARECONNECT_TAG:-latest}
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres: { condition: service_healthy }
+      discovery-server: { condition: service_healthy }
+
+  medical-record-service:
+    <<: *defaults
+    image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-medical-record-service:${CARECONNECT_TAG:-latest}
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres: { condition: service_healthy }
+      discovery-server: { condition: service_healthy }
+
+  billing-service:
+    <<: *defaults
+    image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-billing-service:${CARECONNECT_TAG:-latest}
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres: { condition: service_healthy }
+      discovery-server: { condition: service_healthy }
+
+  notification-service:
+    <<: *defaults
+    image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-notification-service:${CARECONNECT_TAG:-latest}
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres: { condition: service_healthy }
+      discovery-server: { condition: service_healthy }
+
+  queue-service:
+    <<: *defaults
+    image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-queue-service:${CARECONNECT_TAG:-latest}
+    environment:
+      <<: [*service-env, *db-env]
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+    depends_on:
+      postgres: { condition: service_healthy }
+      discovery-server: { condition: service_healthy }
+
+  frontend:
+    <<: *defaults
+    image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-frontend:${CARECONNECT_TAG:-latest}
+    # The only published port besides nothing else: put a TLS terminator in
+    # front of this, which is also where HSTS belongs (see nginx.conf).
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    depends_on:
+      api-gateway: { condition: service_healthy }
+
+volumes:
+  postgres-data:
+  kafka-data:

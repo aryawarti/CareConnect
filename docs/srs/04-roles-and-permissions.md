@@ -5,6 +5,12 @@ roles are not access tiers, they are working identities.
 
 | Role | Who they are | Core responsibility | Data boundary |
 |---|---|---|---|
+> **Implemented today: ADMIN, DOCTOR, PATIENT, STAFF (receptionist) — and only those.**
+> The rest of this table specifies roles for modules that are not built. They were
+> previously seeded into the `roles` table, which made the system advertise authorities
+> nothing enforced; [ADR-010](../adr/adr-010-remove-laboratory-service.md) removed them.
+> Read the rows below as specification, not as capability.
+
 | **Patient** | The person receiving care | Book, attend, read own records, pay | Only their own data |
 | **Doctor** | Licensed clinician | Consult, diagnose, prescribe, order, admit | Own patients; own schedule; charts they treat |
 | **Receptionist** | Front desk | Register, book, check in, collect payment | Operational data, no clinical content |

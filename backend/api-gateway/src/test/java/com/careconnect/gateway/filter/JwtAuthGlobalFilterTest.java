@@ -25,9 +25,10 @@ import reactor.core.publisher.Mono;
 class JwtAuthGlobalFilterTest {
 
     private static final String SECRET = "test-secret-key-that-is-long-enough-for-hs256!!";
+    private static final String GATEWAY_SECRET = "test-gateway-shared-secret";
 
     private final JwtAuthGlobalFilter filter = new JwtAuthGlobalFilter(
-            SECRET, List.of("/api/auth/**", "/api/_platform/**"));
+            SECRET, List.of("/api/auth/**", "/api/_platform/**"), GATEWAY_SECRET);
 
     private String token(Instant expiry) {
         SecretKey key = Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
@@ -102,6 +103,61 @@ class JwtAuthGlobalFilterTest {
         filter.filter(exchange, chain).block();
 
         assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    /**
+     * Services strip identity headers that arrive without this proof, so a
+     * missing stamp means every authenticated request 401s. Worth pinning.
+     */
+    @Test
+    void forwardedRequestsCarryTheGatewayOriginStamp() {
+        GatewayFilterChain chain = mock(GatewayFilterChain.class);
+        AtomicReference<ServerWebExchange> forwarded = chainCapture(chain);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/api/patients")
+                        .header("Authorization", "Bearer " + token(Instant.now().plusSeconds(300)))
+                        .build());
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(forwarded.get().getRequest().getHeaders()
+                .getFirst(JwtAuthGlobalFilter.GATEWAY_AUTH_HEADER))
+                .isEqualTo(GATEWAY_SECRET);
+    }
+
+    /** Public routes are proxied too, so they need the stamp as well. */
+    @Test
+    void publicPathsAlsoCarryTheGatewayOriginStamp() {
+        GatewayFilterChain chain = mock(GatewayFilterChain.class);
+        AtomicReference<ServerWebExchange> forwarded = chainCapture(chain);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/api/auth/login").build());
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(forwarded.get().getRequest().getHeaders()
+                .getFirst(JwtAuthGlobalFilter.GATEWAY_AUTH_HEADER))
+                .isEqualTo(GATEWAY_SECRET);
+    }
+
+    /**
+     * A client that sends its own X-Gateway-Auth must not have it believed —
+     * the gateway overwrites the header on every hop.
+     */
+    @Test
+    void clientSuppliedGatewayStampIsReplaced() {
+        GatewayFilterChain chain = mock(GatewayFilterChain.class);
+        AtomicReference<ServerWebExchange> forwarded = chainCapture(chain);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/api/auth/login")
+                        .header(JwtAuthGlobalFilter.GATEWAY_AUTH_HEADER, "guessed-value")
+                        .build());
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(forwarded.get().getRequest().getHeaders()
+                .getFirst(JwtAuthGlobalFilter.GATEWAY_AUTH_HEADER))
+                .isEqualTo(GATEWAY_SECRET);
     }
 
     @Test

@@ -61,33 +61,6 @@ public class BillingService {
         });
     }
 
-    /**
-     * Invoice generation for any other billable service (laboratory, radiology,
-     * pharmacy, …) that publishes a "requested"/"dispensed" event. There is no
-     * appointment behind these, so we synthesise a deterministic id from the
-     * source system + its own reference (e.g. "LAB" + lab order number) and
-     * store it in the appointment_id slot. That makes the operation idempotent
-     * for free: a redelivered event derives the same id and findByAppointmentId
-     * returns the existing invoice instead of raising a second charge (BR-BIL-1).
-     */
-    @Transactional
-    public Invoice issueForService(String sourceSystem, String reference,
-                                   UUID patientId, UUID doctorId,
-                                   String patientName, String doctorName,
-                                   BigDecimal amount, String description) {
-        UUID pseudoAppointment = UUID.nameUUIDFromBytes((sourceSystem + ":" + reference).getBytes());
-        return invoices.findByAppointmentId(pseudoAppointment).orElseGet(() -> {
-            String number = "INV-%06d".formatted(invoices.nextInvoiceNumber());
-            Invoice invoice = invoices.save(new Invoice(number, pseudoAppointment, patientId,
-                    doctorId, patientName, doctorName, amount));
-            log.info("invoice issued {} amount={} for {} {} ({})",
-                    number, amount, sourceSystem, reference, description);
-            publish("InvoiceIssued", invoice);
-            issued.increment();
-            return invoice;
-        });
-    }
-
     @Transactional(readOnly = true)
     public Invoice get(UUID id) {
         return invoices.findById(id).orElseThrow(() -> new InvoiceNotFoundException(id));

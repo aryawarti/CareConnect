@@ -1,23 +1,31 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { CurrencyPipe, DatePipe } from '@angular/common';
+import { HttpErrorResponse } from '@angular/common/http';
 import { RouterLink } from '@angular/router';
+import { map } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { AuthService } from '../../core/auth/auth.service';
 import { AppointmentsService } from '../../core/appointments/appointments.service';
 import { BillingService } from '../../core/billing/billing.service';
 import { RecordsService } from '../../core/records/records.service';
 import { PatientsService } from '../../core/patients/patients.service';
-import { Appointment } from '../../core/appointments/appointment.models';
-import { Invoice } from '../../core/billing/billing.models';
-import { Encounter } from '../../core/records/record.models';
-import { StatComponent, EmptyStateComponent } from '../../shared/ui.components';
+import { asyncResource } from '../../core/http/async-resource';
+import { EmptyStateComponent, ErrorPanelComponent, SkeletonComponent, StatComponent }
+  from '../../shared/ui.components';
 
+/**
+ * The patient's landing screen, which aggregates three independent requests.
+ *
+ * Each card owns its own states rather than the page having one global spinner:
+ * a slow invoices call should not hide appointments that already arrived. The
+ * stat tiles show an em dash while loading, because rendering "0 upcoming
+ * appointments" before the answer arrives states something false.
+ */
 @Component({
   selector: 'cc-patient-dashboard',
   standalone: true,
   imports: [CurrencyPipe, DatePipe, RouterLink, MatButtonModule, MatIconModule,
-            StatComponent, EmptyStateComponent],
+            StatComponent, EmptyStateComponent, SkeletonComponent, ErrorPanelComponent],
   template: `
     <div class="cc-page">
       <div class="cc-page-head">
@@ -47,16 +55,19 @@ import { StatComponent, EmptyStateComponent } from '../../shared/ui.components';
       }
 
       <div class="cc-grid cc-grid-4" style="margin-bottom:22px">
-        <cc-stat icon="event_upcoming" [value]="upcoming().length"
-                 label="Upcoming appointments"
+        <cc-stat icon="event_upcoming" label="Upcoming appointments"
+                 [value]="appointments.loading() ? '—' : upcoming().length"
                  [hint]="nextVisitHint()" />
-        <cc-stat icon="clinical_notes" [value]="records().length" label="Visit records" tone="info"
+        <cc-stat icon="clinical_notes" label="Visit records" tone="info"
+                 [value]="records.loading() ? '—' : (records.value()?.length ?? 0)"
                  hint="Notes and prescriptions" />
-        <cc-stat icon="account_balance_wallet"
-                 [value]="outstanding() | currency:'INR':'symbol':'1.0-0'"
-                 label="Outstanding balance" tone="accent"
-                 [hint]="unpaidCount() + ' invoice(s) due'" />
-        <cc-stat icon="task_alt" [value]="completedCount()" label="Completed visits" tone="ok" />
+        <cc-stat icon="account_balance_wallet" label="Outstanding balance" tone="accent"
+                 [value]="invoices.loading()
+                            ? '—'
+                            : (outstanding() | currency:'INR':'symbol':'1.0-0')"
+                 [hint]="invoices.loading() ? 'Loading…' : unpaidCount() + ' invoice(s) due'" />
+        <cc-stat icon="task_alt" label="Completed visits" tone="ok"
+                 [value]="appointments.loading() ? '—' : completedCount()" />
       </div>
 
       <div class="cc-grid cc-grid-2">
@@ -65,7 +76,11 @@ import { StatComponent, EmptyStateComponent } from '../../shared/ui.components';
             <h3 style="flex:1">Next appointments</h3>
             <a mat-button routerLink="/my-appointments">All</a>
           </div>
-          @if (upcoming().length) {
+          @if (appointments.loading()) {
+            <cc-skeleton [count]="3" label="Loading appointments…" />
+          } @else if (appointments.failed()) {
+            <cc-error [message]="appointments.error()!" (retry)="appointments.reload()" />
+          } @else if (upcoming().length) {
             <div class="cc-timeline" style="margin-top:14px">
               @for (a of upcoming().slice(0, 4); track a.id) {
                 <div class="cc-timeline-item">
@@ -93,10 +108,14 @@ import { StatComponent, EmptyStateComponent } from '../../shared/ui.components';
             <h3 style="flex:1">Recent visits</h3>
             <a mat-button routerLink="/my-records">All</a>
           </div>
-          @if (records().length) {
+          @if (records.loading()) {
+            <cc-skeleton [count]="3" label="Loading visits…" />
+          } @else if (records.failed()) {
+            <cc-error [message]="records.error()!" (retry)="records.reload()" />
+          } @else if (records.value()?.length) {
             <div class="cc-stack" style="margin-top:14px">
-              @for (r of records().slice(0, 4); track r.id) {
-                <div class="cc-row" style="padding:10px 0;border-bottom:1px solid var(--cc-line)">
+              @for (r of records.value()!.slice(0, 4); track r.id) {
+                <div class="cc-row cc-list-row">
                   <div style="flex:1">
                     <div style="font-weight:600">{{ r.doctorName }}</div>
                     <div class="cc-faint">
@@ -123,10 +142,12 @@ import { StatComponent, EmptyStateComponent } from '../../shared/ui.components';
           </div>
           <div class="cc-stack" style="margin-top:12px">
             @for (i of unpaid().slice(0, 3); track i.id) {
-              <div class="cc-row" style="padding:10px 0;border-bottom:1px solid var(--cc-line)">
+              <div class="cc-row cc-list-row">
                 <div style="flex:1">
                   <div style="font-weight:600">{{ i.invoiceNumber }}</div>
-                  <div class="cc-faint">{{ i.doctorName }} · {{ i.issuedAt | date:'mediumDate' }}</div>
+                  <div class="cc-faint">
+                    {{ i.doctorName }} · {{ i.issuedAt | date:'mediumDate' }}
+                  </div>
                 </div>
                 <span class="cc-money">{{ i.amount | currency:'INR':'symbol':'1.2-2' }}</span>
                 <a mat-flat-button class="cc-btn-primary" routerLink="/my-invoices">Pay</a>
@@ -139,26 +160,31 @@ import { StatComponent, EmptyStateComponent } from '../../shared/ui.components';
   `
 })
 export class PatientDashboardComponent {
-  private readonly auth = inject(AuthService);
-  private readonly appointments = inject(AppointmentsService);
+  private readonly appointmentsApi = inject(AppointmentsService);
   private readonly billing = inject(BillingService);
   private readonly recordsApi = inject(RecordsService);
   private readonly patients = inject(PatientsService);
 
-  readonly all = signal<Appointment[]>([]);
-  readonly invoices = signal<Invoice[]>([]);
-  readonly records = signal<Encounter[]>([]);
+  readonly appointments = asyncResource(() =>
+    this.appointmentsApi.mine(0, 50).pipe(map(r => r.data)));
+  readonly invoices = asyncResource(() =>
+    this.billing.myInvoices(0, 50).pipe(map(r => r.data)));
+  readonly records = asyncResource(() =>
+    this.recordsApi.myHistory(0, 20).pipe(map(r => r.data)));
+
   readonly needsProfile = signal(false);
   readonly firstName = signal('');
 
-  readonly upcoming = computed(() => this.all()
-    .filter(a => ['REQUESTED', 'CONFIRMED'].includes(a.status) && new Date(a.startAt) > new Date())
+  readonly upcoming = computed(() => (this.appointments.value() ?? [])
+    .filter(a => ['REQUESTED', 'CONFIRMED'].includes(a.status)
+                 && new Date(a.startAt) > new Date())
     .sort((a, b) => a.startAt.localeCompare(b.startAt)));
 
   readonly completedCount = computed(() =>
-    this.all().filter(a => a.status === 'COMPLETED').length);
+    (this.appointments.value() ?? []).filter(a => a.status === 'COMPLETED').length);
 
-  readonly unpaid = computed(() => this.invoices().filter(i => i.status === 'ISSUED'));
+  readonly unpaid = computed(() =>
+    (this.invoices.value() ?? []).filter(i => i.status === 'ISSUED'));
   readonly unpaidCount = computed(() => this.unpaid().length);
   readonly outstanding = computed(() =>
     this.unpaid().reduce((sum, i) => sum + Number(i.amount), 0));
@@ -166,11 +192,15 @@ export class PatientDashboardComponent {
   constructor() {
     this.patients.myProfile().subscribe({
       next: p => this.firstName.set(p.firstName),
-      error: () => this.needsProfile.set(true)
+      error: (err: HttpErrorResponse) => {
+        // Only a 404 means "no profile yet". Treating every failure as one — as
+        // this did — nags a patient to complete a profile they already have
+        // whenever patient-service is briefly unavailable.
+        if (err.status === 404) {
+          this.needsProfile.set(true);
+        }
+      }
     });
-    this.appointments.mine(0, 50).subscribe(r => this.all.set(r.data));
-    this.billing.myInvoices(0, 50).subscribe(r => this.invoices.set(r.data));
-    this.recordsApi.myHistory(0, 20).subscribe(r => this.records.set(r.data));
   }
 
   greeting(): string {
@@ -179,6 +209,7 @@ export class PatientDashboardComponent {
   }
 
   nextVisitHint(): string {
+    if (this.appointments.loading()) { return 'Loading…'; }
     const next = this.upcoming()[0];
     if (!next) { return 'Nothing scheduled'; }
     const days = Math.round((new Date(next.startAt).getTime() - Date.now()) / 86400000);

@@ -24,7 +24,6 @@
         <module>medical-record-service</module>
         <module>billing-service</module>
         <module>queue-service</module>
-        <module>laboratory-service</module>
     </modules>
 
     <properties>
@@ -36,6 +35,19 @@
         <!-- Boot 3.4 bundles a Byte Buddy that predates JDK 25; devs run 21-25.
              Bytecode still targets 21 (maven.compiler.release). -->
         <byte-buddy.version>1.17.5</byte-buddy.version>
+        <!-- Pinned explicitly. Because this project imports the Boot BOM rather
+             than inheriting spring-boot-starter-parent, nothing manages plugin
+             versions for us: Maven would fall back to the version bound to the
+             packaging lifecycle and warn that the build is not reproducible
+             ("'build.plugins.plugin.version' ... is missing"). -->
+        <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
+        <!-- Ahead of the version Boot 3.4 manages. Docker Desktop 29 returns a
+             sparse /info payload over the Windows named pipe that Testcontainers
+             1.20.x rejects with a 400, so every container test silently SKIPPED
+             on a machine where Docker was plainly running. Newer client, and the
+             detection works again. -->
+        <testcontainers.version>1.21.3</testcontainers.version>
     </properties>
 
     <dependencyManagement>
@@ -52,6 +64,17 @@
                 <groupId>net.bytebuddy</groupId>
                 <artifactId>byte-buddy-agent</artifactId>
                 <version>${byte-buddy.version}</version>
+            </dependency>
+            <!-- BEFORE spring-boot-dependencies on purpose: with imported BOMs
+                 the first declaration wins, and a <testcontainers.version>
+                 property does nothing (same trap as byte-buddy above). Declaring
+                 the BOM here is the only way to move off the managed version. -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
             <dependency>
                 <groupId>org.springframework.boot</groupId>
@@ -92,6 +115,7 @@
                      must do it explicitly (found via a 500 on the first @RequestParam). -->
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
+                <version>${maven-compiler-plugin.version}</version>
                 <configuration>
                     <parameters>true</parameters>
                 </configuration>
@@ -102,6 +126,7 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven-surefire-plugin.version}</version>
                     <configuration>
                         <!-- net.bytebuddy.experimental: accept JVMs newer than the
                              Byte Buddy release officially knows (e.g. JDK 25).
