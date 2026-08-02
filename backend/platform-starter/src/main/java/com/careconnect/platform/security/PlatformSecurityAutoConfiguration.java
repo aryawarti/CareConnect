@@ -1,7 +1,9 @@
 package com.careconnect.platform.security;
 
+import com.careconnect.platform.client.DownstreamFailureAdvice;
 import com.careconnect.platform.client.IdentityForwardingInterceptor;
 import feign.RequestInterceptor;
+import org.springframework.cloud.client.circuitbreaker.NoFallbackAvailableException;
 import jakarta.servlet.Filter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,6 +62,22 @@ public class PlatformSecurityAutoConfiguration {
         RequestInterceptor identityForwardingInterceptor(
                 @Value("${careconnect.platform.gateway-secret:}") String sharedSecret) {
             return new IdentityForwardingInterceptor(sharedSecret);
+        }
+    }
+
+    /**
+     * Translates the exception the circuit breaker substitutes for a failed
+     * downstream call. Conditional on the circuit-breaker class for the same
+     * reason as above: a service without one never sees that exception.
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass({RequestInterceptor.class, NoFallbackAvailableException.class})
+    static class DownstreamFailureTranslation {
+
+        @Bean
+        @ConditionalOnMissingBean(DownstreamFailureAdvice.class)
+        DownstreamFailureAdvice downstreamFailureAdvice() {
+            return new DownstreamFailureAdvice();
         }
     }
 }

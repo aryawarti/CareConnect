@@ -2,7 +2,15 @@ spring:
   application:
     name: billing-service
   config:
-    import: "optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}"
+    # configtree reads file-mounted secrets (one file per value) into the
+    # Environment, so ${JWT_SECRET} and friends resolve from /run/secrets/
+    # without any code change. Docker and Kubernetes both mount secrets this
+    # way, which is the point: the K8s migration changes the mount, not the app.
+    # `optional:` keeps dev, tests and a bare `spring-boot:run` working, where
+    # the directory does not exist. See docs/adr/adr-011-deployment-topology.md
+    import:
+      - "optional:configtree:/run/secrets/"
+      - "optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}"
 
 server:
   port: 8086

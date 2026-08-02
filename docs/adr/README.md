@@ -14,3 +14,4 @@ One file per decision. Accepted ADRs are immutable — a changed mind produces a
 | [008](adr-008-flyway-migrations.md) | Flyway for schema migrations | Accepted |
 | [009](adr-009-transactional-outbox.md) | Transactional outbox for event publication | Accepted |
 | [010](adr-010-remove-laboratory-service.md) | Remove laboratory-service and the unimplemented roles | Accepted |
+| [011](adr-011-deployment-topology.md) | Deploy the full architecture to one free VM, not a reduced one to a PaaS | Accepted |

@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -61,7 +62,24 @@ public class QueueBroadcaster {
         }
     }
 
-    /** Keeps proxies from closing idle streams. */
+    /**
+     * Keeps proxies from closing idle streams.
+     *
+     * A waiting-room board can sit for an hour with nothing to report, and every
+     * proxy between it and here has an idle-read timeout: nginx defaults to 60s
+     * (raised to 3600s in nginx.conf), Cloudflare's free tier drops at 100s, and
+     * load balancers generally cap it too. An SSE comment costs 3 bytes, is
+     * ignored by EventSource, and resets all of those clocks.
+     *
+     * 20s is chosen to sit comfortably under the shortest of them rather than
+     * just under one: the stream must survive whatever gets put in front of it,
+     * and the cost of being conservative is negligible.
+     *
+     * Also the cheapest way to reap dead subscribers — a screen that closed
+     * without a clean disconnect is only detected on a failed send, and without
+     * this the map would hold it until the 30-minute emitter timeout.
+     */
+    @Scheduled(fixedDelay = 20_000L)
     public void heartbeat() {
         subscribers.forEach((doctorId, emitters) -> {
             for (SseEmitter emitter : emitters) {

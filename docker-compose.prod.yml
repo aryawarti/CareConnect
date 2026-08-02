@@ -1,41 +1,131 @@
 # Run CareConnect from published images instead of building locally.
 #
-# This is what the CD pipeline's output is for: every push to main publishes an
-# image per service to GHCR, tagged with the commit SHA, and this file runs them.
+# This is what the CD pipeline's output is for: every push to main publishes a
+# multi-arch (amd64 + arm64) image per service to GHCR, tagged with the commit
+# SHA, and this file runs them.
 #
 #   export CARECONNECT_REGISTRY=ghcr.io/<owner>
-#   export CARECONNECT_TAG=<commit-sha>        # or 'latest'
-#   cp .env.example .env                       # then put real secrets in it
-#   docker compose -f docker-compose.prod.yml up -d
+#   export CARECONNECT_TAG=<commit-sha>        # never 'latest' in a deployment
+#   docker compose -f docker-compose.prod.yml -f docker-compose.edge.yml up -d
+#
+# This file describes the *service topology* only. TLS, the public hostname and
+# anything else specific to where it happens to run live in
+# docker-compose.edge.yml, because the edge is exactly the layer a Kubernetes
+# Ingress or an ALB replaces on migration. Keeping it out of here means that
+# swap deletes a file rather than editing this one.
+# Full rationale: docs/adr/adr-011-deployment-topology.md
 #
 # Differences from docker-compose.yml, all deliberate:
 #   - images are pulled, never built, so what runs is exactly what was tested;
 #   - ALLOW_INSECURE_DEFAULTS is NOT set, so the services refuse to start unless
 #     you supply real secrets (that is the point of the guard);
-#   - no seeder, because seeding demo patients into a real deployment is wrong.
+#   - secrets are files, not environment variables (see the `secrets:` block);
+#   - every container has a memory ceiling and a log ceiling, because a single
+#     VM has neither to spare;
+#   - the seeder is behind a `demo` profile, so demo patients are something you
+#     opt into rather than something a real deployment inherits.
 name: careconnect
 
-x-image-tag: &tag ${CARECONNECT_TAG:-latest}
+# ---------------------------------------------------------------------------
+# Secrets: files, not environment variables.
+#
+# Environment variables leak. They show up in `docker inspect`, in /proc for
+# anything sharing a namespace, and in the crash dumps of any library that
+# helpfully prints its config. Docker mounts each of these read-only at
+# /run/secrets/<name>, and every service imports that directory via Spring's
+# `configtree` (see each application.yml), so ${JWT_SECRET} resolves from the
+# file with no code change anywhere.
+#
+# The reason this shape and not another: a Kubernetes Secret mounted as a volume
+# produces precisely the same thing — one file per key, under one directory. The
+# migration changes the mount, not the application. That is the single most
+# common thing that forces application changes when leaving Compose, and this is
+# it being paid for up front.
+#
+# A missing file makes `docker compose up` fail immediately, which is the same
+# fail-closed behaviour the old ${VAR:?} guards gave, one layer lower.
+# Generate them with infra/secrets/generate.sh.
+# ---------------------------------------------------------------------------
+secrets:
+  JWT_SECRET:
+    file: ${SECRETS_DIR:-./secrets}/JWT_SECRET
+  POSTGRES_PASSWORD:
+    file: ${SECRETS_DIR:-./secrets}/POSTGRES_PASSWORD
+  GATEWAY_SHARED_SECRET:
+    file: ${SECRETS_DIR:-./secrets}/GATEWAY_SHARED_SECRET
+  SEED_ADMIN_PASSWORD:
+    file: ${SECRETS_DIR:-./secrets}/SEED_ADMIN_PASSWORD
+
+# Docker's default json-file driver keeps every log line forever. Eleven chatty
+# JVMs fill a 47 GB boot volume in weeks, and a full disk takes down Postgres
+# and Kafka together — the most common way an unattended hobby VM dies.
+# 30 MB per container, ~400 MB for the whole stack, bounded.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-defaults: &defaults
+  restart: unless-stopped
+  stop_grace_period: 30s
+  logging: *logging
+
+# Memory ceilings exist as much for the JVMs' benefit as the host's:
+# MaxRAMPercentage is a percentage *of the container limit*, and with no limit
+# set it reads the host's total RAM. Eleven JVMs each sizing their heap against
+# 24 GB is how a machine with plenty of memory still OOMs.
+#
+# Anchors rather than per-service blocks so the whole budget is visible in one
+# place and can be re-tuned at once. Total: ~8 GB of the A1 free tier's 24 GB.
+# The headroom is deliberate — it means this same file fits the 1 OCPU / 6 GB
+# shape Oracle hands out when A1 capacity is tight, after halving these.
+#
+# SerialGC, not the default G1: below ~2 GB of heap G1's concurrent threads and
+# region bookkeeping cost more than they return, and eleven services' worth of
+# GC threads on four cores is contention nobody asked for. These are low-traffic
+# services where pause time is not the constraint.
+x-mem-service: &mem-service
+  deploy:
+    resources:
+      limits: { memory: 512M }
+x-mem-small: &mem-small
+  deploy:
+    resources:
+      limits: { memory: 384M }
 
 x-service-env: &service-env
   CONFIG_SERVER_URL: http://config-server:8888
   EUREKA_URL: http://discovery-server:8761/eureka
-  GATEWAY_SHARED_SECRET: ${GATEWAY_SHARED_SECRET:?set a real value in .env}
   JAVA_TOOL_OPTIONS: >-
     -XX:MaxRAMPercentage=70
+    -XX:+UseSerialGC
     -Djava.security.egd=file:/dev/./urandom
 
 x-db-env: &db-env
   POSTGRES_HOST: postgres
   POSTGRES_USER: ${POSTGRES_USER:?set a real value in .env}
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a real value in .env}
 
-x-jwt-env: &jwt-env
-  JWT_SECRET: ${JWT_SECRET:?set a real value in .env}
+# Every business service needs the database password and the gateway trust
+# secret, and nothing else.
+x-business-secrets: &business-secrets
+  - POSTGRES_PASSWORD
+  - GATEWAY_SHARED_SECRET
 
-x-defaults: &defaults
-  restart: unless-stopped
-  stop_grace_period: 30s
+x-business-deps: &business-deps
+  postgres: { condition: service_healthy }
+  discovery-server: { condition: service_healthy }
+
+# Business services are the slowest to come up: Flyway migrations, then Eureka
+# registration. On four ARM cores with eleven JVMs contending, the honest number
+# is minutes, not seconds. start_period is not a timeout — failures inside it
+# simply do not count — so being generous costs nothing and stops Docker killing
+# a service that was merely still booting.
+x-jvm-health: &jvm-health
+  interval: 15s
+  timeout: 5s
+  retries: 20
+  start_period: 240s
 
 services:
   postgres:
@@ -43,10 +133,17 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      # Native _FILE support: the entrypoint reads the mounted secret itself, so
+      # the password never enters the container's environment.
+      POSTGRES_PASSWORD_FILE: /run/secrets/POSTGRES_PASSWORD
+    secrets:
+      - POSTGRES_PASSWORD
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    deploy:
+      resources:
+        limits: { memory: 1G }
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-careconnect}"]
       interval: 5s
@@ -67,139 +164,211 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # A fixed disk needs a bounded log. Seven days is comfortably longer than
+      # any consumer outage worth recovering from automatically, and the size
+      # cap is the backstop for the case retention-by-time does not cover: a
+      # burst that fills the volume inside the window.
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_BYTES: 1073741824
+      KAFKA_HEAP_OPTS: -Xmx768m -Xms256m
     volumes:
       - kafka-data:/var/lib/kafka/data
+    deploy:
+      resources:
+        limits: { memory: 1500M }
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
 
   config-server:
-    <<: *defaults
+    <<: [*defaults, *mem-small]
     image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-config-server:${CARECONNECT_TAG:-latest}
     environment:
       EUREKA_URL: http://discovery-server:8761/eureka
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=70 -XX:+UseSerialGC
     healthcheck:
+      <<: *jvm-health
       test: ["CMD", "wget", "-qO-", "http://localhost:8888/actuator/health/readiness"]
-      interval: 10s
-      timeout: 3s
-      retries: 30
-      start_period: 90s
+      start_period: 120s
 
   discovery-server:
-    <<: *defaults
+    <<: [*defaults, *mem-small]
     image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-discovery-server:${CARECONNECT_TAG:-latest}
     environment:
       CONFIG_SERVER_URL: http://config-server:8888
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=70 -XX:+UseSerialGC
     depends_on:
       config-server: { condition: service_healthy }
     healthcheck:
+      <<: *jvm-health
       test: ["CMD", "wget", "-qO-", "http://localhost:8761/actuator/health/readiness"]
-      interval: 10s
-      timeout: 3s
-      retries: 30
-      start_period: 90s
+      start_period: 120s
 
   api-gateway:
-    <<: *defaults
+    <<: [*defaults, *mem-service]
     image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-api-gateway:${CARECONNECT_TAG:-latest}
     environment:
-      <<: [*service-env, *jwt-env]
+      <<: *service-env
+      # The deployed origin must be listed or every POST is rejected with a bare
+      # 403 before routing — browsers send Origin on same-origin POST/PUT/DELETE,
+      # and being same-origin through the TLS terminator does not exempt it.
+      # GETs keep working, which is what makes this so confusing to diagnose.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?set this to https://your-host}
+    secrets:
+      - JWT_SECRET
+      - GATEWAY_SHARED_SECRET
     depends_on:
       discovery-server: { condition: service_healthy }
     healthcheck:
+      <<: *jvm-health
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health/readiness"]
-      interval: 10s
-      timeout: 3s
-      retries: 30
-      start_period: 120s
 
   identity-service:
-    <<: *defaults
+    <<: [*defaults, *mem-service]
     image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-identity-service:${CARECONNECT_TAG:-latest}
     environment:
-      <<: [*service-env, *db-env, *jwt-env]
+      <<: [*service-env, *db-env]
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@careconnect.local}
-      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?set a real admin password in .env}
-    depends_on:
-      postgres: { condition: service_healthy }
-      discovery-server: { condition: service_healthy }
+    secrets:
+      - POSTGRES_PASSWORD
+      - GATEWAY_SHARED_SECRET
+      - JWT_SECRET
+      - SEED_ADMIN_PASSWORD
+    depends_on: *business-deps
 
   patient-service:
-    <<: *defaults
+    <<: [*defaults, *mem-service]
     image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-patient-service:${CARECONNECT_TAG:-latest}
     environment:
       <<: [*service-env, *db-env]
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
-    depends_on:
-      postgres: { condition: service_healthy }
-      discovery-server: { condition: service_healthy }
+    secrets: *business-secrets
+    depends_on: *business-deps
 
   provider-service:
-    <<: *defaults
+    <<: [*defaults, *mem-service]
     image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-provider-service:${CARECONNECT_TAG:-latest}
     environment:
       <<: [*service-env, *db-env]
-    depends_on:
-      postgres: { condition: service_healthy }
-      discovery-server: { condition: service_healthy }
+    secrets: *business-secrets
+    depends_on: *business-deps
 
   appointment-service:
-    <<: *defaults
+    <<: [*defaults, *mem-service]
     image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-appointment-service:${CARECONNECT_TAG:-latest}
     environment:
       <<: [*service-env, *db-env]
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
-    depends_on:
-      postgres: { condition: service_healthy }
-      discovery-server: { condition: service_healthy }
+    secrets: *business-secrets
+    depends_on: *business-deps
 
   medical-record-service:
-    <<: *defaults
+    <<: [*defaults, *mem-service]
     image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-medical-record-service:${CARECONNECT_TAG:-latest}
     environment:
       <<: [*service-env, *db-env]
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
-    depends_on:
-      postgres: { condition: service_healthy }
-      discovery-server: { condition: service_healthy }
+    secrets: *business-secrets
+    depends_on: *business-deps
 
   billing-service:
-    <<: *defaults
+    <<: [*defaults, *mem-service]
     image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-billing-service:${CARECONNECT_TAG:-latest}
     environment:
       <<: [*service-env, *db-env]
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
-    depends_on:
-      postgres: { condition: service_healthy }
-      discovery-server: { condition: service_healthy }
+    secrets: *business-secrets
+    depends_on: *business-deps
 
   notification-service:
-    <<: *defaults
+    <<: [*defaults, *mem-service]
     image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-notification-service:${CARECONNECT_TAG:-latest}
     environment:
       <<: [*service-env, *db-env]
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
-    depends_on:
-      postgres: { condition: service_healthy }
-      discovery-server: { condition: service_healthy }
+    secrets: *business-secrets
+    depends_on: *business-deps
 
   queue-service:
-    <<: *defaults
+    <<: [*defaults, *mem-service]
     image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-queue-service:${CARECONNECT_TAG:-latest}
     environment:
       <<: [*service-env, *db-env]
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
-    depends_on:
-      postgres: { condition: service_healthy }
-      discovery-server: { condition: service_healthy }
+    secrets: *business-secrets
+    depends_on: *business-deps
 
   frontend:
     <<: *defaults
     image: ${CARECONNECT_REGISTRY:-ghcr.io/careconnect}/careconnect-frontend:${CARECONNECT_TAG:-latest}
-    # The only published port besides nothing else: put a TLS terminator in
-    # front of this, which is also where HSTS belongs (see nginx.conf).
-    ports:
-      - "${HTTP_PORT:-80}:80"
+    # No published port. The TLS terminator in docker-compose.edge.yml is the
+    # only container that binds a host port; this one is reached over the compose
+    # network, exactly as the services behind it are. nginx keeps serving the SPA
+    # and proxying /api — including its tuned SSE block — unchanged.
+    deploy:
+      resources:
+        limits: { memory: 64M }
+    depends_on:
+      api-gateway: { condition: service_healthy }
+
+  # A stateful deployment without a backup is not production-shaped, and on a
+  # single VM there is no managed snapshot to fall back on. pg_dumpall rather
+  # than pg_dump because the interesting thing here is *eight* databases.
+  #
+  # Logical dumps, not PITR: restoring one is a single psql invocation with no
+  # WAL archive to babysit, and for a system whose demo data can be re-seeded the
+  # recovery objective does not justify the operational weight of the
+  # alternative. Documented as a decision so it can be revisited, not assumed.
+  postgres-backup:
+    <<: *defaults
+    image: postgres:16-alpine
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:?}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+    secrets:
+      - POSTGRES_PASSWORD
+    volumes:
+      - postgres-backups:/backups
+      - ./infra/postgres/backup.sh:/usr/local/bin/backup.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/backup.sh"]
+    deploy:
+      resources:
+        limits: { memory: 128M }
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  # Demo data, opt-in only:  docker compose ... --profile demo up -d
+  #
+  # This file deliberately had no seeder, and for a real clinic that is right —
+  # inventing patients in a production database is not a convenience, it is a
+  # data integrity incident. But a portfolio deployment with an empty database
+  # demonstrates nothing. A profile makes it a choice: the seeder cannot start
+  # unless somebody names it explicitly.
+  seeder:
+    image: python:3.12-alpine
+    profiles: ["demo"]
+    restart: "no"
+    logging: *logging
+    environment:
+      GATEWAY_URL: http://api-gateway:8080
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@careconnect.local}
+      # _FILE indirection so the password is read from the mount rather than
+      # sitting in the seeder's environment (infra/seed/seed.py).
+      SEED_ADMIN_PASSWORD_FILE: /run/secrets/SEED_ADMIN_PASSWORD
+    secrets:
+      - SEED_ADMIN_PASSWORD
+    volumes:
+      - ./infra/seed:/seed:ro
+    command: ["python", "/seed/seed.py"]
     depends_on:
       api-gateway: { condition: service_healthy }
 
 volumes:
   postgres-data:
+  postgres-backups:
   kafka-data:

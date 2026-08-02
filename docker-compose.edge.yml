@@ -1,0 +1,58 @@
+# The public edge: TLS termination, certificate lifecycle, and the only
+# container in the stack that binds a host port.
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.edge.yml up -d
+#
+# Why this is a separate file rather than a service in docker-compose.prod.yml:
+# the edge is the one layer that does *not* survive a platform migration. On
+# Kubernetes it becomes an Ingress plus cert-manager; on ECS an ALB plus ACM; on
+# a managed platform it disappears entirely. Everything in prod.yml — the
+# services, their dependencies, their secrets, their health checks — carries over
+# as-is. Splitting them means the migration deletes this file and writes one
+# manifest, instead of unpicking TLS concerns from a service topology.
+#
+# Why Caddy rather than nginx+certbot, given the SPA is already served by nginx:
+# certificate *renewal* is the part that rots. Caddy obtains and renews
+# automatically with no cron job, no reload hook and no 90-day cliff to forget,
+# and the config below is short enough to read in one go. The existing
+# frontend/nginx.conf then needs no change at all — it was already written for a
+# terminator in front of it and deliberately leaves HSTS to this layer.
+name: careconnect
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "80:80"     # required: HTTP-01 validation and the HTTPS redirect
+      - "443:443"
+    environment:
+      # e.g. careconnect.duckdns.org — the name the certificate is issued for.
+      CARECONNECT_DOMAIN: ${CARECONNECT_DOMAIN:?set to the public hostname}
+      # Let's Encrypt uses this only to warn about expiry it could not renew.
+      ACME_EMAIL: ${ACME_EMAIL:?set to a real address}
+      # Point at Let's Encrypt staging for the first run — see the Caddyfile.
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account keys live here. This MUST be a named
+      # volume: losing it means re-issuing on every restart, and Let's Encrypt
+      # allows five duplicate certificates per week before locking you out for
+      # the rest of it.
+      - caddy-data:/data
+      - caddy-config:/config
+    deploy:
+      resources:
+        limits: { memory: 128M }
+    depends_on:
+      - frontend
+
+volumes:
+  caddy-data:
+  caddy-config:
