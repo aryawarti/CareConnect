@@ -141,20 +141,43 @@ jobs:
       # Cheap, and catches the class of mistake that only surfaces when someone
       # tries to start the stack: a broken anchor, or a deleted service still
       # named in another service's depends_on.
-      # docker-compose.prod.yml uses ${VAR:?} guards so a real deployment cannot
-      # start without secrets. That makes `config` fail here too, which is the
-      # guard working — so supply throwaway values to validate the *structure*.
+      # docker-compose.prod.yml uses ${VAR:?} guards and file-backed secrets so a
+      # real deployment cannot start without them. Both make `config` fail here
+      # too, which is the guard working — so supply throwaway values and dummy
+      # secret files to validate the *structure*.
+      - name: Create throwaway secret files
+        run: |
+          mkdir -p ./secrets
+          for s in JWT_SECRET POSTGRES_PASSWORD GATEWAY_SHARED_SECRET SEED_ADMIN_PASSWORD; do
+            printf 'ci-validation-only' > "./secrets/$s"
+          done
+
       - name: Validate compose files
         env:
-          GATEWAY_SHARED_SECRET: ci-validation-only
           POSTGRES_USER: ci
-          POSTGRES_PASSWORD: ci
+          GATEWAY_SHARED_SECRET: ci-validation-only
           JWT_SECRET: ci-validation-only-not-a-real-secret
           SEED_ADMIN_PASSWORD: ci-validation-only
+          POSTGRES_PASSWORD: ci
+          CORS_ALLOWED_ORIGINS: https://ci.invalid
+          CARECONNECT_DOMAIN: ci.invalid
+          ACME_EMAIL: ci@ci.invalid
         run: |
           docker compose -f docker-compose.yml config --quiet
           docker compose -f docker-compose.prod.yml config --quiet
+          # The deployed combination, not just the pieces: an overlay can be
+          # valid alone and still collide with the file it merges into.
+          docker compose -f docker-compose.prod.yml -f docker-compose.edge.yml config --quiet
+          # The demo profile is opt-in, so nothing else here would ever parse it.
+          docker compose -f docker-compose.prod.yml --profile demo config --quiet
           echo "compose files are valid"
+
+      # These run unattended on a VM where nobody sees a syntax error until the
+      # backup silently never happens.
+      - name: Shellcheck deployment scripts
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck infra/postgres/backup.sh infra/secrets/generate.sh
 
   publish:
     name: Publish images to GHCR
@@ -185,6 +208,25 @@ jobs:
           name: frontend-dist
           path: frontend/dist/
 
+      # Images are built for arm64 as well as amd64 because the deployment
+      # target is an Oracle Cloud Always Free A1 instance, which is ARM. An
+      # amd64-only manifest does not start there at all.
+      #
+      # Cross-building is nearly free *because* the Dockerfiles are runtime-only:
+      # they COPY a jar that CI already produced and set an ENTRYPOINT, so no
+      # compilation happens under emulation. A multi-stage in-image Maven build
+      # would make this step brutally slow under QEMU — another reason that
+      # decision (see the Dockerfile header comments) keeps paying off.
+      #
+      # Both architectures, not arm64-only: one manifest then runs on the ARM VM,
+      # on an x86 laptop, and on x86 ECS/EKS nodes later. Pinning to arm64 would
+      # swap one lock-in for another.
+      - name: Set up QEMU (for arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -200,6 +242,7 @@ jobs:
           SHA: ${{ github.sha }}
           REF_NAME: ${{ github.ref_name }}
           IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          PLATFORMS: linux/amd64,linux/arm64
         run: |
           set -euo pipefail
           owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
@@ -212,16 +255,24 @@ jobs:
             local name="$1" context="$2" dockerfile="$3"
             local repo="ghcr.io/${owner}/careconnect-${name}"
             echo "::group::${name}"
-            docker build -t "${repo}:${SHA}" -f "${dockerfile}" "${context}"
-            docker push "${repo}:${SHA}"
+            # buildx builds and pushes in one step: a multi-arch image cannot be
+            # held in the local docker image store, so the `build then push`
+            # split used for single-arch does not apply here.
+            docker buildx build \
+              --platform "$PLATFORMS" \
+              -t "${repo}:${SHA}" \
+              -f "${dockerfile}" \
+              --push \
+              "${context}"
+
             # Moving tags, applied only after the immutable SHA tag is safely up.
-            if [ "$IS_TAG" = "true" ]; then
-              docker tag "${repo}:${SHA}" "${repo}:${REF_NAME}"
-              docker push "${repo}:${REF_NAME}"
-            else
-              docker tag "${repo}:${SHA}" "${repo}:latest"
-              docker push "${repo}:latest"
-            fi
+            # `imagetools create` retags the manifest that was just pushed — it
+            # copies no layers and rebuilds nothing, so the moving tag is
+            # guaranteed to point at the exact bytes tested above. (`docker tag`
+            # would not work: there is no local image to tag.)
+            local moving
+            if [ "$IS_TAG" = "true" ]; then moving="$REF_NAME"; else moving="latest"; fi
+            docker buildx imagetools create -t "${repo}:${moving}" "${repo}:${SHA}"
             echo "::endgroup::"
           }
 
@@ -239,13 +290,139 @@ jobs:
           {
             echo "### Images published"
             echo ""
-            echo "Tag: \`${SHA}\`"
+            echo "Tag: \`${SHA}\`  ·  Architectures: \`linux/amd64\`, \`linux/arm64\`"
             echo ""
             echo "Run the published stack with:"
             echo ""
             echo '```bash'
             echo "export CARECONNECT_REGISTRY=ghcr.io/${owner}"
             echo "export CARECONNECT_TAG=${SHA}"
-            echo "docker compose -f docker-compose.prod.yml up -d"
+            echo "docker compose -f docker-compose.prod.yml -f docker-compose.edge.yml up -d"
             echo '```'
+            echo ""
+            echo "Verify both architectures are in the manifest:"
+            echo ""
+            echo '```bash'
+            echo "docker buildx imagetools inspect ghcr.io/${owner}/careconnect-api-gateway:${SHA}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to the VM
+    needs: publish
+    # main only, and only if a real deployment target is configured. The `if` on
+    # VM_HOST means a fork, or this repository before anyone has provisioned a
+    # VM, skips this job instead of failing red for a machine that never existed.
+    if: github.ref == 'refs/heads/main' && vars.VM_HOST != ''
+    runs-on: ubuntu-latest
+    # A GitHub Environment, so the SSH key is scoped to it rather than readable
+    # by every workflow in the repository, and deployments get an audit trail.
+    environment:
+      name: production
+      url: https://${{ vars.CARECONNECT_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Open an SSH session to the VM
+        env:
+          KEY: ${{ secrets.VM_SSH_KEY }}
+          HOST: ${{ vars.VM_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Pinning the host key rather than StrictHostKeyChecking=no: without
+          # it, this pipeline would hand a deploy key to whatever answers on that
+          # address, which is the whole attack. Capture it once during setup with
+          # `ssh-keyscan -t ed25519 <host>` and store it as VM_SSH_HOST_KEY.
+          printf '%s\n' "${{ secrets.VM_SSH_HOST_KEY }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      # Compose files are configuration and travel with the repository; only the
+      # images come from GHCR. Copying them per-deploy rather than running a
+      # `git pull` on the VM keeps the VM free of a checkout, credentials and a
+      # branch that can drift from what was actually tested.
+      - name: Ship the deployment files
+        env:
+          HOST: ${{ vars.VM_HOST }}
+          USER_NAME: ${{ vars.VM_USER }}
+          DIR: ${{ vars.VM_APP_DIR }}
+        run: |
+          set -euo pipefail
+          tar czf deploy.tgz \
+            docker-compose.prod.yml docker-compose.edge.yml \
+            infra/caddy infra/postgres infra/seed infra/secrets
+          scp -i ~/.ssh/id_ed25519 deploy.tgz "$USER_NAME@$HOST:$DIR/deploy.tgz"
+
+      - name: Roll the stack forward
+        env:
+          HOST: ${{ vars.VM_HOST }}
+          USER_NAME: ${{ vars.VM_USER }}
+          DIR: ${{ vars.VM_APP_DIR }}
+          OWNER: ${{ github.repository_owner }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+          # Deploying the SHA tag, never `latest`: the running version is then
+          # always identifiable, and a rollback is re-running this job at an
+          # older commit rather than hoping a moving tag still points somewhere
+          # sensible.
+          ssh -i ~/.ssh/id_ed25519 "$USER_NAME@$HOST" \
+            "CARECONNECT_REGISTRY=ghcr.io/${owner} CARECONNECT_TAG=${SHA} DIR=${DIR} bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$DIR"
+          tar xzf deploy.tgz && rm -f deploy.tgz
+
+          export CARECONNECT_REGISTRY CARECONNECT_TAG
+          COMPOSE="docker compose -f docker-compose.prod.yml -f docker-compose.edge.yml"
+
+          # Pull first, start second. Pulling twelve images inside `up` would
+          # leave the stack half-old and half-new for the length of the download
+          # if the network is slow; this way the swap is as short as it can be.
+          $COMPOSE pull --quiet
+          $COMPOSE up -d --remove-orphans
+
+          # Untagged layers from previous deployments, which otherwise accumulate
+          # until the boot volume is full. Not `-a`: that would also remove the
+          # images belonging to the `demo` profile when it is not running.
+          docker image prune -f
+          REMOTE
+
+      # A deploy that "succeeded" because SSH exited 0 has proven nothing. This
+      # asks the public URL, through the real certificate, whether the platform
+      # actually came back — and fails the job if it did not, so the run history
+      # reflects reality.
+      - name: Smoke test the public URL
+        env:
+          DOMAIN: ${{ vars.CARECONNECT_DOMAIN }}
+        run: |
+          set -euo pipefail
+          # The gateway chain is the slowest thing to recover; give it time
+          # rather than declaring failure while it is still starting.
+          for attempt in $(seq 1 30); do
+            if curl -fsS --max-time 10 "https://$DOMAIN/api/_platform/config-health" >/dev/null; then
+              echo "healthy after ${attempt} attempt(s)"
+              curl -fsS "https://$DOMAIN/api/_platform/config-health"
+              exit 0
+            fi
+            echo "attempt ${attempt}: not ready yet"
+            sleep 20
+          done
+          echo "::error::Deployment did not become healthy within 10 minutes"
+          exit 1
+
+      - name: Summarise the deployment
+        if: always()
+        env:
+          DOMAIN: ${{ vars.CARECONNECT_DOMAIN }}
+          SHA: ${{ github.sha }}
+        run: |
+          {
+            echo "### Deployed"
+            echo ""
+            echo "- **URL:** https://${DOMAIN}"
+            echo "- **Version:** \`${SHA}\`"
+            echo "- **Rollback:** re-run this workflow from an earlier commit on main"
           } >> "$GITHUB_STEP_SUMMARY"

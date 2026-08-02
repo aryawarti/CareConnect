@@ -1,0 +1,63 @@
+# CareConnect TLS edge.
+#
+# Everything public enters here. Caddy terminates TLS and hands plain HTTP to the
+# nginx container, which serves the SPA and proxies /api to the gateway exactly
+# as it does locally — so the container stack behaves identically with and
+# without this layer, and a bug is never "only in production".
+#
+# HTTPS is not configured below because Caddy does it by default: any site
+# address that is a real hostname gets a certificate obtained over HTTP-01,
+# renewed automatically, and an HTTP->HTTPS redirect. The absence of certificate
+# configuration here is the feature.
+
+{
+	email {$ACME_EMAIL}
+
+	# Staging issues untrusted certificates but shares none of production's rate
+	# limits. Set ACME_CA to the staging directory for the first run of a new
+	# hostname — five failed attempts against production (a closed port 80, a
+	# DNS record that has not propagated) is enough to lock the name out for a
+	# week, and that is the mistake that costs a day.
+	#   ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory
+	# Then unset it and `docker compose up -d caddy` to get a real one.
+	acme_ca {$ACME_CA}
+
+	# Nothing here should ever be a redirect target or an origin for anything
+	# else; the admin API stays off the network.
+	admin off
+}
+
+{$CARECONNECT_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		# HSTS belongs at the TLS terminator and nowhere else — frontend/nginx.conf
+		# says so in a comment and deliberately omits it, because a browser
+		# ignores Strict-Transport-Security sent over plain HTTP. Two years,
+		# subdomains included, and preload-eligible.
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		# Caddy advertising its version buys an attacker a version number.
+		-Server
+	}
+
+	# Server-Sent Events for the live queue board.
+	#
+	# The same trap as nginx, one layer up: a reverse proxy that buffers will
+	# hold events instead of forwarding them, and the board stops updating with
+	# no error anywhere. Caddy does detect text/event-stream and stop buffering
+	# on its own, but an explicit route means that keeps working if the content
+	# type ever changes, and it documents the requirement where somebody editing
+	# this file will see it.
+	#
+	# flush_interval -1 == flush every write immediately, never buffer.
+	@sse path /api/queue/stream/*
+	handle @sse {
+		reverse_proxy frontend:80 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy frontend:80
+	}
+}

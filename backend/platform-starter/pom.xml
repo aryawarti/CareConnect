@@ -38,5 +38,13 @@
             <artifactId>feign-core</artifactId>
             <optional>true</optional>
         </dependency>
+        <!-- Optional, same reasoning: supplies NoFallbackAvailableException, which
+             the circuit breaker wraps every Feign failure in. Services without a
+             circuit breaker don't get the advice that translates it. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-commons</artifactId>
+            <optional>true</optional>
+        </dependency>
     </dependencies>
 </project>

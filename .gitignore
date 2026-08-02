@@ -1,8 +1,33 @@
+# --- Build output ---
 target/
+dist/
 node_modules/
+.angular/
+out-tsc/
+
+# --- Local configuration and credentials ---
+# .env.example IS committed (placeholders only); .env never is.
 .env
+.env.*
+!.env.example
+
+# Deployment secrets are files, one per value (see docker-compose.prod.yml).
+# On a server these live outside the repository, but SECRETS_DIR defaults to
+# ./secrets, so this is the guard against a local run leaving real credentials
+# staged. Belt and braces: the contents are generated, never authored.
+/secrets/
+*.pem
+*.key
+!src/**/*.key
+
+# --- Editors and OS ---
 .idea/
 .vscode/
+*.iml
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Logs and local runtime state ---
 *.log
-dist/
-.angular/
+npm-debug.log*

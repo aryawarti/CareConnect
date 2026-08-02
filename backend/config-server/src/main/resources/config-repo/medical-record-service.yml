@@ -39,6 +39,19 @@ resilience4j:
         failure-rate-threshold: 50
         wait-duration-in-open-state: 10s
         permitted-number-of-calls-in-half-open-state: 3
+        # A 404 is the downstream answering correctly, not failing. Counting it
+        # would let a normal condition open the breaker: every user who has
+        # registered but not yet created a patient profile produces a 404 on
+        # each screen, so a handful of new users at once would trip the breaker
+        # and make a perfectly healthy service unavailable to everyone.
+        #
+        # The breaker exists for a dependency that is down or slow. Client
+        # errors are neither, so they are ignored here and translated to the
+        # right status by platform-starter's DownstreamFailureAdvice.
+        ignore-exceptions:
+          - feign.FeignException$NotFound
+          - feign.FeignException$BadRequest
+          - feign.FeignException$Forbidden
   timelimiter:
     configs:
       default:

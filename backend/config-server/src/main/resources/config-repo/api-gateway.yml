@@ -63,9 +63,14 @@ spring:
             # before routing. Symptom when this is wrong: GETs fine, every
             # POST 403s with an empty body.
             #   4200 = ng serve (dev)   4300 = nginx container
-            allowed-origins:
-              - "http://localhost:4200"
-              - "http://localhost:4300"
+            #
+            # A deployed origin (https://your-host) must be added here too, for
+            # exactly the same reason — being same-origin through the TLS
+            # terminator does not exempt it. Hence the override: a deployment
+            # sets CORS_ALLOWED_ORIGINS rather than editing this file, because
+            # the hostname is environment-specific and the localhost defaults
+            # must keep working for dev.
+            allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:4200,http://localhost:4300}
             allowed-methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
             allowed-headers: "*"
             allow-credentials: true

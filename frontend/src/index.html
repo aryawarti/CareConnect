@@ -5,6 +5,28 @@
   <title>CareConnect</title>
   <base href="/">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!--
+    angular.json turns OFF two production optimisations for these, and the reason
+    is our Content-Security-Policy rather than taste:
+
+      optimization.styles.inlineCritical  extracts above-the-fold CSS and defers
+                                          the rest as
+                                          `media="print" onload="this.media='all'"`
+      optimization.fonts.inline           rewrites the Google Fonts links below
+
+    Both produce an inline event handler, and script-src 'self' correctly refuses
+    to run it:
+
+        Executing inline event handler violates 'script-src self'
+
+    CSP hashes do not apply to event handlers, so keeping either optimisation
+    would need 'unsafe-hashes' or 'unsafe-inline' — trading a real
+    script-injection defence for a few milliseconds of render time on an app
+    whose users are signed in all day. Not a trade worth making here.
+
+    The better end state is self-hosting these two families, which would also let
+    the two fonts.* exceptions come out of the CSP in frontend/nginx.conf.
+  -->
   <link rel="preconnect" href="https://fonts.gstatic.com">
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">

@@ -20,11 +20,27 @@ import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 
+
+def secret(name, default):
+    """Read NAME_FILE if set, else NAME, else the default.
+
+    The `_FILE` indirection is the Docker/Kubernetes convention for passing a
+    secret without putting it in the environment, where anything that can read
+    /proc or run `docker inspect` can see it. The deployed stack mounts secrets
+    as files; local compose keeps using plain variables, so both work.
+    """
+    path = os.environ.get(name + "_FILE")
+    if path:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().strip()
+    return os.environ.get(name, default)
+
+
 GATEWAY = os.environ.get("GATEWAY_URL", "http://api-gateway:8080")
 ADMIN_EMAIL = os.environ.get("SEED_ADMIN_EMAIL", "admin@careconnect.local")
-ADMIN_PASSWORD = os.environ.get("SEED_ADMIN_PASSWORD", "Admin12345")
-DOCTOR_PASSWORD = os.environ.get("SEED_DOCTOR_PASSWORD", "Doctor12345")
-PATIENT_PASSWORD = os.environ.get("SEED_PATIENT_PASSWORD", "Patient12345")
+ADMIN_PASSWORD = secret("SEED_ADMIN_PASSWORD", "Admin12345")
+DOCTOR_PASSWORD = secret("SEED_DOCTOR_PASSWORD", "Doctor12345")
+PATIENT_PASSWORD = secret("SEED_PATIENT_PASSWORD", "Patient12345")
 MARKER_EMAIL = "asha.verma@careconnect.demo"   # presence => already seeded
 
 

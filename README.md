@@ -140,9 +140,9 @@ cd backend && ./mvnw verify        # Docker optional, but see below
 ```
 
 **Read the `Skipped` count, not just `BUILD SUCCESS`.** Every Testcontainers test is
-annotated `disabledWithoutDocker`, so without Docker running, 15 of them skip
+annotated `disabledWithoutDocker`, so without Docker running, 25 of them skip
 silently — including all the concurrency and event-pipeline tests, which are the ones
-worth having. Known coverage gaps (queue-service has none) are listed in
+worth having. Known coverage gaps are listed in
 [the testing chapter](docs/srs/12-deployment-and-testing.md#known-gaps-in-coverage)
 rather than left for you to discover.
 
@@ -155,8 +155,9 @@ on CI:
 |---|---|
 | **Backend** | `./mvnw verify` on JDK 21 — and, crucially, **asserts that no test was skipped** |
 | **Frontend** | typecheck, Karma unit tests, production build |
-| **Compose** | both compose files parse, catching a dangling `depends_on` before anyone tries to start the stack |
-| **Publish** | builds an image per service and pushes to GHCR — only on `main`/tags, only after the three above pass |
+| **Compose** | every compose combination parses — dev, production, production+edge, and the demo profile — catching a dangling `depends_on` before anyone tries to start the stack |
+| **Publish** | builds a **multi-arch (amd64 + arm64)** image per service and pushes to GHCR — only on `main`/tags, only after the three above pass |
+| **Deploy** | ships the compose files to the VM, rolls the stack to the new SHA, then **asks the public URL whether it actually came back** |
 
 The skip assertion is the part worth explaining. Every Testcontainers test is annotated
 `disabledWithoutDocker`, so on a machine without a working Docker they **skip silently and
@@ -172,16 +173,47 @@ paying an invoice had never once worked against a real database.
 
 Images are runtime-only (jars built in CI, then copied in), and the publish job reuses the
 exact artifacts the test jobs produced — so what ships is what was tested, not a rebuild
-that ought to match.
+that ought to match. That same decision is what makes cross-building for ARM nearly free:
+nothing compiles under emulation, only a `COPY` runs.
 
 ```bash
 export CARECONNECT_REGISTRY=ghcr.io/<owner>
-export CARECONNECT_TAG=<commit-sha>          # or latest
-docker compose -f docker-compose.prod.yml up -d
+export CARECONNECT_TAG=<commit-sha>          # never 'latest' in a deployment
+docker compose -f docker-compose.prod.yml -f docker-compose.edge.yml up -d
 ```
 
 `docker-compose.prod.yml` deliberately does **not** set `ALLOW_INSECURE_DEFAULTS`, so the
 services refuse to start until real secrets are supplied — the guard doing its job.
+
+## Deployment
+
+**The full architecture runs on one permanently free VM.** Not a reduced version of it: eleven
+services, eight databases and Kafka, each in its own container, behind Caddy for TLS —
+[ADR-011](docs/adr/adr-011-deployment-topology.md), runbook in
+[docs/operations/deployment-vm.md](docs/operations/deployment-vm.md).
+
+That choice is the interesting part. The obvious free option — a static host plus a container
+PaaS — allows roughly one always-on process, one database that expires after 30 days, and no
+message broker at all. Every one of those limits forces the same concession: collapse the
+services into a monolith, the databases into one schema, the outbox into in-process dispatch.
+The result would deploy, and would no longer be the system this repository documents. A free
+4 OCPU / 24 GB ARM VM runs the real thing in about 8 GB.
+
+Two decisions worth reading:
+
+- **Secrets are mounted files, not environment variables** — one file per value under
+  `/run/secrets/`, read through Spring's `configtree`. Environment variables are visible to
+  `docker inspect` and to anything that can read `/proc`; more usefully, a Kubernetes Secret
+  mounted as a volume produces the identical layout, so the row that normally forces
+  application changes on migration becomes a no-op.
+- **TLS lives in a separate compose file.** `docker-compose.edge.yml` holds Caddy and nothing
+  else, because the edge is the one layer that does *not* survive a move to Kubernetes or ECS.
+  Isolating it means that migration deletes a file rather than unpicking TLS concerns from a
+  service topology.
+
+Every container carries a memory ceiling, a log ceiling, a health check and a restart policy,
+and Postgres is backed up nightly to a retained volume — on a single VM, unbounded logs and an
+unbounded JVM heap are the two things that actually take the machine down.
 
 ## Documentation
 
@@ -190,7 +222,8 @@ Architecture-first, written and maintained alongside the code — [start here](d
 - **[Software Requirements Specification](docs/srs/README.md)** — 27 chapters: modules, roles, permission matrix, user stories, workflows, data model, APIs, events, security, deployment, testing, roadmap
 - [Roadmap](docs/ROADMAP.md) — the 9 delivered phases
 - [Architecture](docs/architecture/high-level-design.md) · [Database design](docs/architecture/database-design.md) · [Communication & events](docs/architecture/communication.md) · [Security](docs/architecture/security.md)
-- [ADRs 001–009](docs/adr/README.md) — every decision with alternatives and trade-offs
+- [ADRs 001–011](docs/adr/README.md) — every decision with alternatives and trade-offs
+- [Deployment runbook](docs/operations/deployment-vm.md) — provisioning, TLS, secrets, CD, backups, and the failures each step actually produces
 - [API docs](docs/api/) per service · [Troubleshooting](docs/operations/troubleshooting.md) — real failures hit during development, with causes
 - [Interview notes](docs/learning/interview-notes.md) · [Learning journal](docs/learning/journal.md)
 
@@ -204,4 +237,10 @@ Specifically still missing, and known:
 - **No per-account lockout.** Auth endpoints are rate-limited per client address, which slows broad guessing but not a slow, targeted attack on one known email.
 - **Rate limiting is per gateway instance** (in-memory token buckets). Correct for a single gateway; a second replica would each allow the full budget.
 - **CSP allows `'unsafe-inline'` for styles**, because Angular and Material inject inline styles. Scripts are `'self'` with no exemption.
-- **queue-service has no tests.**
+- **queue-service is thinly tested.** The SSE broadcaster is covered; the queue domain rules and controller are not.
+- **A deploy is a brief outage.** `docker compose up -d` recreates containers, so the site is
+  down for the seconds each service takes to restart. Genuine zero-downtime needs an
+  orchestrator that can run two versions at once — a reason to move to one, not something
+  Compose can be configured into.
+- **One of everything.** One VM, one Postgres, one Kafka broker at `replication.factor=1`. The
+  architecture supports replicas; the free tier provides one machine to put them on.
