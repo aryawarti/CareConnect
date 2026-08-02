@@ -107,6 +107,25 @@ export const routes: Routes = [
     loadComponent: () => import('./features/providers/doctor-application.component').then(m => m.DoctorApplicationComponent)
   },
   {
+    // A doctor publishing their own consulting hours. Without this the only way
+    // to set a schedule was through the administrator's doctor list, so every
+    // doctor hired through the application flow was unbookable.
+    path: 'my-schedule',
+    canActivate: [authGuard, roleGuard('DOCTOR')],
+    loadComponent: () => import('./features/providers/my-schedule.component').then(m => m.MyScheduleComponent)
+  },
+  {
+    // Browse by department -> doctors in it -> one doctor's profile -> book.
+    path: 'departments',
+    canActivate: [authGuard],
+    loadComponent: () => import('./features/providers/departments.component').then(m => m.DepartmentsComponent)
+  },
+  {
+    path: 'doctors/:id',
+    canActivate: [authGuard],
+    loadComponent: () => import('./features/providers/doctor-profile.component').then(m => m.DoctorProfileComponent)
+  },
+  {
     path: 'doctor-approvals',
     canActivate: [authGuard, roleGuard('ADMIN', 'STAFF')],
     loadComponent: () => import('./features/providers/doctor-approvals.component').then(m => m.DoctorApprovalsComponent)

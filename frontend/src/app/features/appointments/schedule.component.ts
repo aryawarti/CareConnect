@@ -12,7 +12,7 @@ import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { ProvidersService } from '../../core/providers/providers.service';
 import { AppointmentsService } from '../../core/appointments/appointments.service';
 import { AuthService } from '../../core/auth/auth.service';
-import { Doctor } from '../../core/providers/provider.models';
+import { DirectoryEntry } from '../../core/providers/provider.models';
 import { Appointment } from '../../core/appointments/appointment.models';
 import { deferredResource } from '../../core/http/async-resource';
 import { humanizeError } from '../../core/http/http-status';
@@ -106,7 +106,7 @@ export class ScheduleComponent {
   private readonly auth = inject(AuthService);
 
   readonly columns = ['time', 'patient', 'reason', 'status', 'actions'];
-  readonly doctors = signal<Doctor[]>([]);
+  readonly doctors = signal<DirectoryEntry[]>([]);
   readonly isStaff = ['STAFF', 'ADMIN'].some(r => this.auth.user()?.roles.includes(r));
 
   readonly doctorCtl = new FormControl('', { nonNullable: true });

@@ -2,23 +2,61 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable, map } from 'rxjs';
 import { Envelope, PagedEnvelope } from '../patients/patient.models';
-import { Department, Doctor, Slot } from './provider.models';
+import {
+  Department, DirectoryEntry, Doctor, DoctorProfile, ScheduleException, Slot
+} from './provider.models';
 
 @Injectable({ providedIn: 'root' })
 export class ProvidersService {
   private readonly http = inject(HttpClient);
   private readonly base = '/api/providers';
 
-  directory(q: string, page: number, size: number): Observable<PagedEnvelope<Doctor>> {
+  directory(q: string, page: number, size: number,
+            departmentId?: string): Observable<PagedEnvelope<DirectoryEntry>> {
     let params = new HttpParams().set('page', page).set('size', size);
     if (q.trim()) {
       params = params.set('q', q.trim());
     }
-    return this.http.get<PagedEnvelope<Doctor>>(`${this.base}/directory`, { params });
+    if (departmentId) {
+      params = params.set('departmentId', departmentId);
+    }
+    return this.http.get<PagedEnvelope<DirectoryEntry>>(`${this.base}/directory`, { params });
   }
 
   departments(): Observable<Department[]> {
     return this.http.get<Envelope<Department[]>>(`${this.base}/departments`).pipe(map(r => r.data));
+  }
+
+  /**
+   * The full doctor record, for administration screens only.
+   *
+   * Not the public directory: this carries contact details, employment status
+   * and verification state, which staff managing the clinic need and a patient
+   * browsing for a cardiologist has no business receiving.
+   */
+  allDoctors(page = 0, size = 100): Observable<PagedEnvelope<Doctor>> {
+    const params = new HttpParams().set('page', page).set('size', size);
+    return this.http.get<PagedEnvelope<Doctor>>(`${this.base}/doctors`, { params });
+  }
+
+  /** Credentials, fee, weekly hours and time off in one call — see DoctorProfile. */
+  profile(id: string): Observable<DoctorProfile> {
+    return this.http.get<Envelope<DoctorProfile>>(`${this.base}/doctors/${id}/profile`)
+      .pipe(map(r => r.data));
+  }
+
+  timeOff(doctorId: string): Observable<ScheduleException[]> {
+    return this.http.get<Envelope<ScheduleException[]>>(`${this.base}/doctors/${doctorId}/exceptions`)
+      .pipe(map(r => r.data));
+  }
+
+  addTimeOff(doctorId: string, date: string, reason: string): Observable<ScheduleException> {
+    return this.http.post<Envelope<ScheduleException>>(
+      `${this.base}/doctors/${doctorId}/exceptions`, { date, reason }).pipe(map(r => r.data));
+  }
+
+  removeTimeOff(doctorId: string, exceptionId: string): Observable<void> {
+    return this.http.delete<void>(`${this.base}/doctors/${doctorId}/exceptions/${exceptionId}`);
   }
 
   /** The signed-in doctor's own profile. */

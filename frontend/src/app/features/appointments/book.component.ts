@@ -1,8 +1,8 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, effect, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule, Validators } from '@angular/forms';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { map } from 'rxjs';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -13,6 +13,7 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { ProvidersService } from '../../core/providers/providers.service';
+import { DAY_NAMES_LONG } from '../../core/providers/provider.models';
 import { AppointmentsService } from '../../core/appointments/appointments.service';
 import { asyncResource, deferredResource } from '../../core/http/async-resource';
 import { humanizeError } from '../../core/http/http-status';
@@ -99,9 +100,22 @@ import { ErrorPanelComponent, SkeletonComponent } from '../../shared/ui.componen
                   }
                 </mat-chip-listbox>
               } @else {
-                <p class="cc-muted">
-                  No free slots on this date. Try another day, or a different doctor.
-                </p>
+                <!-- "No slots" has three quite different causes and the patient
+                     can only act on two of them. Saying which one applies is the
+                     difference between a dead end and a next step. -->
+                <div class="cc-alert cc-alert-warn" role="status">
+                  <mat-icon>{{ emptyReason().icon }}</mat-icon>
+                  <div>
+                    <strong>{{ emptyReason().title }}</strong>
+                    <div class="cc-faint" style="margin-top:4px">{{ emptyReason().detail }}</div>
+                    @if (emptyReason().suggestDate; as next) {
+                      <button mat-stroked-button type="button" style="margin-top:12px"
+                              (click)="jumpTo(next)">
+                        Try {{ next | date:'EEEE, d MMM' }}
+                      </button>
+                    }
+                  </div>
+                </div>
               }
             </div>
 
@@ -136,6 +150,7 @@ export class BookComponent {
   private readonly appointments = inject(AppointmentsService);
   private readonly snackBar = inject(MatSnackBar);
   private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
 
   readonly today = new Date().toISOString().slice(0, 10);
 
@@ -156,6 +171,56 @@ export class BookComponent {
   readonly submitting = signal(false);
   readonly bookingError = signal<string | null>(null);
 
+  /** The chosen doctor, as the directory described them — carries workingDays. */
+  readonly chosenDoctor = computed(() =>
+    this.doctors.value()?.find(d => d.id === this.doctorIdSignal()) ?? null);
+
+  /**
+   * Why there are no slots, in terms the patient can act on.
+   *
+   * "No free slots on this date" was true but useless: it reads as "this doctor
+   * is busy" whether the doctor never consults on Tuesdays, is on leave that
+   * day, or is genuinely fully booked. Only the last is worth waiting for; the
+   * first two need a different date, and the first can be answered without
+   * asking the server at all.
+   */
+  readonly emptyReason = computed((): {
+    icon: string; title: string; detail: string; suggestDate: string | null;
+  } => {
+    const doctor = this.chosenDoctor();
+    const date = this.dateCtl.value;
+
+    if (doctor && !doctor.bookable) {
+      return {
+        icon: 'event_busy',
+        title: 'This doctor has no published consulting hours',
+        detail: 'Nobody has set their schedule yet, so no date can be booked. '
+              + 'Try another doctor in the same department.',
+        suggestDate: null
+      };
+    }
+
+    const weekday = date ? new Date(`${date}T00:00:00`).getDay() : -1;
+    // JS Sunday=0; the API and DAY_NAMES use ISO where Sunday=7.
+    const isoDay = weekday === 0 ? 7 : weekday;
+
+    if (doctor && doctor.workingDays.length && !doctor.workingDays.includes(isoDay)) {
+      return {
+        icon: 'event_busy',
+        title: `Dr. ${doctor.lastName} does not consult on ${DAY_NAMES_LONG[isoDay]}s`,
+        detail: `They consult on ${doctor.workingDays.map(d => DAY_NAMES_LONG[d]).join(', ')}.`,
+        suggestDate: this.nextWorkingDate(doctor.workingDays)
+      };
+    }
+
+    return {
+      icon: 'event_available',
+      title: 'Fully booked on this date',
+      detail: 'Every slot on this day has been taken. Another date is likely to have room.',
+      suggestDate: this.nextWorkingDate(doctor?.workingDays ?? [], 1)
+    };
+  });
+
   /**
    * Bridges the reactive form into signal-land. A FormControl is not a signal,
    * so reading slotCtl.value from a computed would never re-evaluate.
@@ -163,13 +228,57 @@ export class BookComponent {
   private readonly slotChosen = signal(false);
   readonly canSubmit = computed(() => !this.submitting() && this.slotChosen());
 
+  /** Mirrors doctorCtl into signal-land, for the same reason as slotChosen. */
+  private readonly doctorIdSignal = signal('');
+
   constructor() {
     // takeUntilDestroyed: these outlive the component otherwise, and a stale
     // subscription writing to a destroyed component's signals is a real leak.
-    this.doctorCtl.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => this.refreshSlots());
+    this.doctorCtl.valueChanges.pipe(takeUntilDestroyed()).subscribe(id => {
+      this.doctorIdSignal.set(id);
+      this.refreshSlots();
+    });
     this.dateCtl.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => this.refreshSlots());
     this.slotCtl.valueChanges.pipe(takeUntilDestroyed())
       .subscribe(value => this.slotChosen.set(!!value));
+
+    // Arriving from a doctor's profile or a directory card: honour the choice
+    // already made rather than presenting an empty picker again. Applied once
+    // the directory has loaded, since the select needs its options to exist.
+    const preselected = this.route.snapshot.queryParamMap.get('doctorId');
+    if (preselected) {
+      effect(() => {
+        if (this.doctors.value()?.some(d => d.id === preselected) && !this.doctorCtl.value) {
+          this.doctorCtl.setValue(preselected);
+        }
+      });
+    }
+  }
+
+  /**
+   * The next date this doctor actually consults, so the empty state can offer a
+   * date that will work instead of inviting the patient to guess again.
+   * Looks two weeks ahead, which covers any weekly pattern.
+   */
+  private nextWorkingDate(workingDays: number[], skipDays = 1): string | null {
+    if (!workingDays.length) {
+      return null;
+    }
+    const from = new Date(`${this.dateCtl.value}T00:00:00`);
+    for (let i = skipDays; i <= 14; i++) {
+      const candidate = new Date(from);
+      candidate.setDate(from.getDate() + i);
+      const iso = candidate.getDay() === 0 ? 7 : candidate.getDay();
+      if (workingDays.includes(iso)) {
+        return `${candidate.getFullYear()}-${String(candidate.getMonth() + 1).padStart(2, '0')}`
+             + `-${String(candidate.getDate()).padStart(2, '0')}`;
+      }
+    }
+    return null;
+  }
+
+  jumpTo(date: string): void {
+    this.dateCtl.setValue(date);
   }
 
   private refreshSlots(): void {

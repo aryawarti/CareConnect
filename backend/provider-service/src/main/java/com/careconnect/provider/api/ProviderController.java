@@ -6,6 +6,9 @@ import java.time.LocalDate;
 import org.springframework.format.annotation.DateTimeFormat;
 import com.careconnect.provider.api.dto.DoctorDtos;
 import com.careconnect.provider.api.dto.DoctorDtos.CreateDoctorRequest;
+import com.careconnect.provider.api.dto.DoctorDtos.DepartmentSummary;
+import com.careconnect.provider.api.dto.DoctorDtos.DirectoryEntry;
+import com.careconnect.provider.api.dto.DoctorDtos.DoctorProfileResponse;
 import com.careconnect.provider.api.dto.DoctorDtos.DoctorResponse;
 import com.careconnect.provider.api.dto.DoctorDtos.ExceptionRequest;
 import com.careconnect.provider.api.dto.DoctorDtos.ExceptionResponse;
@@ -14,11 +17,14 @@ import com.careconnect.provider.api.dto.DoctorDtos.SlotResponse;
 import com.careconnect.provider.api.dto.DoctorDtos.UpdateDoctorRequest;
 import com.careconnect.provider.api.dto.DoctorSummary;
 import com.careconnect.provider.application.ProviderService;
-import com.careconnect.provider.domain.Department;
+import com.careconnect.provider.domain.Doctor;
 import jakarta.validation.Valid;
 import java.net.URI;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
@@ -54,17 +60,45 @@ public class ProviderController {
 
     // ---- public directory (FR-C3) -----------------------------------------
 
+    /**
+     * The doctor list a patient browses, optionally narrowed to one department.
+     *
+     * Each entry carries the doctor's working days, so a card can say "Mon, Wed,
+     * Fri" or "no schedule published" instead of implying every doctor is
+     * bookable and letting the patient discover otherwise at the date picker.
+     */
     @GetMapping("/directory")
-    public ApiEnvelope<List<DoctorResponse>> directory(
+    public ApiEnvelope<List<DirectoryEntry>> directory(
             @RequestParam(required = false) String q,
+            @RequestParam(required = false) UUID departmentId,
             @PageableDefault(size = 20, sort = "lastName", direction = Sort.Direction.ASC)
             Pageable pageable) {
-        return ApiEnvelope.ofPage(service.directory(q, pageable), DoctorResponse::from);
+        Page<Doctor> page = service.directory(q, departmentId, pageable);
+        Map<UUID, Set<Integer>> workingDays =
+                service.workingDaysFor(page.getContent().stream().map(Doctor::getId).toList());
+        return ApiEnvelope.ofPage(page, d -> DirectoryEntry.from(d, workingDays.get(d.getId())));
     }
 
     @GetMapping("/departments")
-    public ApiEnvelope<List<Department>> departments() {
-        return ApiEnvelope.of(service.departments());
+    public ApiEnvelope<List<DepartmentSummary>> departments() {
+        Map<UUID, Long> counts = service.doctorCountsByDepartment();
+        return ApiEnvelope.of(service.departments().stream()
+                .map(d -> new DepartmentSummary(d.getId(), d.getName(),
+                        counts.getOrDefault(d.getId(), 0L)))
+                .toList());
+    }
+
+    /**
+     * Everything the doctor profile page shows, in one call: credentials, fee,
+     * the weekly pattern and upcoming time off. Assembled server-side so the
+     * page renders at once rather than in four instalments.
+     */
+    @GetMapping("/doctors/{id}/profile")
+    @PreAuthorize("isAuthenticated()")
+    public ApiEnvelope<DoctorProfileResponse> profile(@PathVariable UUID id) {
+        var view = service.profile(id);
+        return ApiEnvelope.of(DoctorProfileResponse.from(
+                view.doctor(), view.weekly(), view.timeOff()));
     }
 
     // ---- self-registration + verification ----------------------------------

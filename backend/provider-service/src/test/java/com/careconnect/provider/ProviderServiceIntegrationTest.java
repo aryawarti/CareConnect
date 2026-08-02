@@ -49,7 +49,7 @@ class ProviderServiceIntegrationTest {
     void doctorAppearsInDirectoryAndSpecialtySearchWorks() {
         newDoctor(null);
 
-        assertThat(service.directory("cardio", PageRequest.of(0, 10)).getTotalElements())
+        assertThat(service.directory("cardio", null, PageRequest.of(0, 10)).getTotalElements())
                 .isGreaterThanOrEqualTo(1);
     }
 

@@ -16,7 +16,11 @@ import com.careconnect.provider.infrastructure.repository.DepartmentRepository;
 import com.careconnect.provider.infrastructure.repository.DoctorRepository;
 import com.careconnect.provider.infrastructure.repository.ScheduleExceptionRepository;
 import java.time.LocalDate;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,11 +55,78 @@ public class ProviderService {
         return departments.findAll();
     }
 
+    /**
+     * Departments with how many bookable doctors each has.
+     *
+     * The count is the point: a patient browsing departments should not be able
+     * to walk into an empty one and find out only after the click. Two queries
+     * total (departments, then one grouped count) rather than a count per
+     * department.
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, Long> doctorCountsByDepartment() {
+        Map<UUID, Long> counts = new HashMap<>();
+        for (Object[] row : doctors.countActiveByDepartment()) {
+            counts.put((UUID) row[0], (Long) row[1]);
+        }
+        return counts;
+    }
+
     // ---- doctors -----------------------------------------------------------
 
     @Transactional(readOnly = true)
-    public Page<Doctor> directory(String query, Pageable pageable) {
-        return doctors.directory(query, DoctorStatus.ACTIVE, pageable);
+    public Page<Doctor> directory(String query, UUID departmentId, Pageable pageable) {
+        return doctors.directory(query, DoctorStatus.ACTIVE, departmentId, pageable);
+    }
+
+    /**
+     * Which weekdays each of these doctors actually works.
+     *
+     * Fetched in one query for the whole page rather than per doctor: the
+     * directory renders up to 20 cards and "Mon, Wed, Fri" on each of them must
+     * not cost 20 round trips.
+     *
+     * An empty set is meaningful, not missing data — it means nobody has set
+     * this doctor's schedule yet, so they cannot be booked. Callers show that
+     * plainly instead of letting a patient reach an empty calendar.
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, Set<Integer>> workingDaysFor(List<UUID> doctorIds) {
+        Map<UUID, Set<Integer>> byDoctor = new HashMap<>();
+        if (doctorIds.isEmpty()) {
+            return byDoctor;
+        }
+        for (UUID id : doctorIds) {
+            byDoctor.put(id, new TreeSet<>());
+        }
+        for (AvailabilitySlot slot : slots.findByDoctorIdIn(doctorIds)) {
+            byDoctor.computeIfAbsent(slot.getDoctorId(), k -> new TreeSet<>())
+                    .add(slot.getDayOfWeek());
+        }
+        return byDoctor;
+    }
+
+    /**
+     * Everything a patient needs to decide whether to book this doctor, in one
+     * call: credentials, fee, the weekly pattern, and the days they are away.
+     *
+     * Assembled server-side rather than left to the client to stitch from three
+     * endpoints — the profile page would otherwise show its four sections
+     * arriving one at a time.
+     */
+    @Transactional(readOnly = true)
+    public DoctorProfileView profile(UUID doctorId) {
+        Doctor doctor = get(doctorId);
+        return new DoctorProfileView(
+                doctor,
+                slots.findByDoctorIdOrderByDayOfWeekAscStartTimeAsc(doctorId),
+                exceptions.findByDoctorIdAndExceptionDateGreaterThanEqualOrderByExceptionDate(
+                        doctorId, LocalDate.now()));
+    }
+
+    /** Assembled view of a doctor; mapped to a DTO at the API boundary. */
+    public record DoctorProfileView(Doctor doctor, List<AvailabilitySlot> weekly,
+                                    List<ScheduleException> timeOff) {
     }
 
     @Transactional

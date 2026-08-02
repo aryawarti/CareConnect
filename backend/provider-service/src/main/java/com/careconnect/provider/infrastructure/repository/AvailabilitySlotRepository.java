@@ -9,5 +9,9 @@ public interface AvailabilitySlotRepository extends JpaRepository<AvailabilitySl
 
     List<AvailabilitySlot> findByDoctorIdOrderByDayOfWeekAscStartTimeAsc(UUID doctorId);
 
+    /** Whole-page lookup for the directory: one query for 20 doctors' working
+     *  days, rather than one per card. */
+    List<AvailabilitySlot> findByDoctorIdIn(List<UUID> doctorIds);
+
     void deleteByDoctorId(UUID doctorId);
 }

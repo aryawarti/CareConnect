@@ -1,21 +1,29 @@
 import { Component, inject, signal } from '@angular/core';
-import { CurrencyPipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { ProvidersService } from '../../core/providers/providers.service';
-import { Doctor } from '../../core/providers/provider.models';
+import { Department } from '../../core/providers/provider.models';
 
 /**
- * The public landing page — the first thing a visitor (or a reviewer opening
- * the repo's screenshot) sees. Pulls the real doctor directory, which is a
- * public endpoint, so the page is never empty once the clinic is seeded.
+ * The public landing page — the first thing a visitor sees.
+ *
+ * Every call to action here leads somewhere a signed-out visitor can actually
+ * go. It previously offered "Browse doctors", which routed to a guarded page
+ * and bounced the visitor to the login screen: the one thing a landing page
+ * must not do is advertise a door that is locked.
+ *
+ * Departments are shown instead. That endpoint is genuinely public (see the
+ * gateway's public-paths), so the section is real data rather than a mock, and
+ * it answers the question a first-time visitor actually has — "do they treat
+ * what I have?" — without requiring an account to find out.
  */
 @Component({
   selector: 'cc-welcome',
   standalone: true,
-  imports: [CurrencyPipe, RouterLink, MatButtonModule, MatIconModule],
+  imports: [RouterLink, MatButtonModule, MatIconModule],
   template: `
+    <!-- Hero -->
     <section style="background:linear-gradient(160deg,#0f766e 0%,#115e59 55%,#134e4a 100%);
                     color:#fff;padding:76px 20px 84px">
       <div style="max-width:1080px;margin:0 auto;display:grid;
@@ -39,9 +47,9 @@ import { Doctor } from '../../core/providers/provider.models';
                style="background:#fff;color:var(--cc-primary-dark);padding:0 26px;height:46px">
               Create your account
             </a>
-            <a mat-stroked-button routerLink="/doctors"
+            <a mat-stroked-button routerLink="/login"
                style="color:#fff;border-color:rgba(255,255,255,.5);height:46px;padding:0 22px">
-              Browse doctors
+              Sign in
             </a>
           </div>
         </div>
@@ -61,44 +69,74 @@ import { Doctor } from '../../core/providers/provider.models';
       </div>
     </section>
 
-    @if (doctors().length) {
-      <section class="cc-page">
+    <!-- How a visit works: the whole product in three steps -->
+    <section class="cc-page">
+      <div class="cc-page-head">
+        <div>
+          <h2>How a visit works</h2>
+          <div class="cc-sub">From booking to invoice, one connected record</div>
+        </div>
+      </div>
+
+      <div class="cc-grid cc-grid-3">
+        @for (step of steps; track step.title; let i = $index) {
+          <div class="cc-card">
+            <div class="cc-row" style="gap:12px;align-items:center">
+              <div class="cc-step-number">{{ i + 1 }}</div>
+              <div style="font-weight:600">{{ step.title }}</div>
+            </div>
+            <p class="cc-faint" style="margin:12px 0 0;line-height:1.6">{{ step.text }}</p>
+          </div>
+        }
+      </div>
+    </section>
+
+    <!-- Departments: real, public data -->
+    @if (departments().length) {
+      <section class="cc-page" style="padding-top:0">
         <div class="cc-page-head">
           <div>
-            <h2>Our doctors</h2>
-            <div class="cc-sub">Specialists accepting appointments this week</div>
+            <h2>Departments</h2>
+            <div class="cc-sub">Specialist care across the clinic</div>
           </div>
-          <span class="cc-spacer"></span>
-          <a mat-stroked-button routerLink="/doctors">View all</a>
         </div>
 
-        <div class="cc-grid cc-grid-3">
-          @for (doc of doctors(); track doc.id) {
-            <div class="cc-card">
-              <div class="cc-row" style="gap:12px">
-                <div class="cc-stat-icon"><mat-icon>stethoscope</mat-icon></div>
-                <div>
-                  <div style="font-weight:600">Dr. {{ doc.firstName }} {{ doc.lastName }}</div>
-                  <div class="cc-faint">{{ doc.specialty }}</div>
-                </div>
+        <div class="cc-grid cc-grid-4">
+          @for (dept of departments(); track dept.id) {
+            <div class="cc-card cc-card-quiet">
+              <div class="cc-row" style="gap:10px;align-items:center">
+                <mat-icon class="cc-dept-icon">{{ iconFor(dept.name) }}</mat-icon>
+                <div style="font-weight:600">{{ dept.name }}</div>
               </div>
-              <div class="cc-divider"></div>
-              <div class="cc-row">
-                <span class="cc-faint">{{ doc.departmentName }}</span>
-                <span class="cc-spacer" style="flex:1"></span>
-                <span class="cc-money">{{ doc.consultationFee | currency:'INR':'symbol':'1.0-0' }}</span>
+              <div class="cc-faint" style="margin-top:8px;font-size:13px">
+                {{ dept.doctorCount }}
+                {{ dept.doctorCount === 1 ? 'doctor' : 'doctors' }} available
               </div>
             </div>
           }
         </div>
+
+        <p class="cc-faint" style="margin-top:20px;text-align:center">
+          <a routerLink="/register">Create an account</a> to see each doctor's
+          availability and book a slot.
+        </p>
       </section>
     }
-  `
+  `,
+  styles: [`
+    .cc-step-number {
+      width: 30px; height: 30px; border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: var(--cc-primary); color: #fff;
+      font-weight: 600; font-size: 14px; flex: none;
+    }
+    .cc-dept-icon { color: var(--cc-primary); }
+  `]
 })
 export class WelcomeComponent {
   private readonly providers = inject(ProvidersService);
 
-  readonly doctors = signal<Doctor[]>([]);
+  readonly departments = signal<Department[]>([]);
 
   readonly highlights = [
     { icon: 'event_available', title: 'Real-time booking',
@@ -111,15 +149,45 @@ export class WelcomeComponent {
       text: 'Your chart is visible to you and your treating doctor — nobody else.' },
   ];
 
+  readonly steps = [
+    { title: 'Choose a doctor',
+      text: 'Browse by department, compare specialists, and see the days and hours each ' +
+            'one actually consults before you commit to anything.' },
+    { title: 'Book a real slot',
+      text: 'Pick from the times that are genuinely free. The slot is held the moment ' +
+            'you book it, so nobody else can take the one you just chose.' },
+    { title: 'Everything follows',
+      text: 'Check in on the day and watch your place in the queue. After the visit your ' +
+            'notes, prescription and invoice are waiting in your account.' },
+  ];
+
+  /** Maps a department to a Material Symbol. Falls back rather than showing a
+   *  blank tile for a department the clinic adds later. */
+  iconFor(name: string): string {
+    const icons: Record<string, string> = {
+      cardiology: 'cardiology',
+      pediatrics: 'child_care',
+      orthopedics: 'orthopedics',
+      dermatology: 'dermatology',
+      neurology: 'neurology',
+      'general medicine': 'stethoscope',
+      gynecology: 'pregnant_woman',
+      ophthalmology: 'visibility',
+      dentistry: 'dentistry',
+      psychiatry: 'psychology',
+    };
+    return icons[name.trim().toLowerCase()] ?? 'medical_services';
+  }
+
   constructor() {
-    this.providers.directory('', 0, 6).subscribe({
-      next: r => this.doctors.set(r.data),
-      // Deliberately silent, and the only screen where that is the right answer:
-      // this is a marketing panel, not information anyone is relying on. A
-      // visitor who arrives while the backend is warming up should see the page
-      // without a doctor strip, not an error about an endpoint they never asked
-      // for. The section hides itself when the list is empty.
-      error: () => this.doctors.set([])
+    this.providers.departments().subscribe({
+      next: list => this.departments.set(list),
+      // Deliberately silent, and the only screen where that is right: this is a
+      // marketing panel, not information anyone is acting on. A visitor arriving
+      // while the backend is warming up should see the page without this section
+      // rather than an error about an endpoint they never asked for. The section
+      // hides itself when the list is empty.
+      error: () => this.departments.set([])
     });
   }
 }
