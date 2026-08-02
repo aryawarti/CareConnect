@@ -82,11 +82,21 @@ import { AvailabilityEditorComponent } from './availability-editor.component';
           <td mat-cell *matCellDef="let d">{{ d.consultationFee | currency:'INR':'symbol':'1.0-0' }}</td>
         </ng-container>
         <ng-container matColumnDef="actions">
-          <th mat-header-cell *matHeaderCellDef>Availability</th>
+          <th mat-header-cell *matHeaderCellDef>Consulting hours</th>
           <td mat-cell *matCellDef="let d">
-            <button mat-icon-button (click)="editAvailability.set(d)" aria-label="Edit availability">
-              <mat-icon>schedule</mat-icon>
-            </button>
+            <!-- The status, not just a button. A doctor with no hours is listed,
+                 verified and completely unbookable, and nothing in this table
+                 used to say so — which is how the clinic ended up with doctors
+                 patients could find but never book. -->
+            @if (scheduled().has(d.id)) {
+              <button mat-stroked-button (click)="editAvailability.set(d)">
+                <mat-icon>schedule</mat-icon> {{ scheduled().get(d.id) }} days
+              </button>
+            } @else {
+              <button mat-flat-button color="warn" (click)="editAvailability.set(d)">
+                <mat-icon>event_busy</mat-icon> Not bookable — set hours
+              </button>
+            }
           </td>
         </ng-container>
         <tr mat-header-row *matHeaderRowDef="columns"></tr>
@@ -95,7 +105,9 @@ import { AvailabilityEditorComponent } from './availability-editor.component';
       </div>
 
       @if (editAvailability(); as doc) {
-        <cc-availability-editor [doctor]="doc" (closed)="editAvailability.set(null)" />
+        <cc-availability-editor [doctor]="doc" (closed)="editAvailability.set(null)"
+                                (saved)="reload()"
+                                [heading]="'Weekly consulting hours — Dr. ' + doc.lastName" />
       }
     </div>
   `,
@@ -133,15 +145,53 @@ export class DoctorAdminComponent {
     const v = this.form.getRawValue();
     this.service.create({ ...v, userId: v.userId || undefined }).subscribe({
       next: d => {
-        this.snackBar.open(`Added Dr. ${d.lastName}`, 'OK', { duration: 3000 });
+        this.snackBar.open(
+          `Added Dr. ${d.lastName} — now set their consulting hours`, 'OK',
+          { duration: 5000 });
         this.form.reset({ consultationFee: 500 });
         this.reload();
+        // Straight into the schedule rather than back to the list. A doctor
+        // created without hours is unbookable, and the old flow gave no hint
+        // that a second step existed — so it was routinely skipped.
+        this.editAvailability.set(d);
       },
       error: err => this.snackBar.open(err?.error?.detail ?? 'Save failed', 'OK', { duration: 4000 })
     });
   }
 
-  private reload(): void {
-    this.service.directory('', 0, 100).subscribe(r => this.doctors.set(r.data));
+  /** doctorId -> number of days they consult. Absent means no hours at all. */
+  readonly scheduled = signal<Map<string, number>>(new Map());
+
+  reload(): void {
+    // The admin list, not the public directory: staff manage inactive and
+    // unverified doctors too, and those never appear in the patient-facing one.
+    this.service.allDoctors().subscribe(r => {
+      this.doctors.set(r.data);
+      this.loadScheduleStatus(r.data.map(d => d.id));
+    });
+  }
+
+  /**
+   * Which doctors have published hours.
+   *
+   * The public directory computes this in one query, but this table also lists
+   * inactive and unverified doctors who never appear there, so it is asked for
+   * per doctor. Acceptable at clinic scale — tens, not thousands — and the
+   * alternative is an admin-only endpoint duplicating logic that already exists.
+   */
+  private loadScheduleStatus(ids: string[]): void {
+    const status = new Map<string, number>();
+    for (const id of ids) {
+      this.service.availability(id).subscribe({
+        next: slots => {
+          const days = new Set(slots.map(s => s.dayOfWeek));
+          if (days.size) {
+            status.set(id, days.size);
+          }
+          this.scheduled.set(new Map(status));
+        },
+        error: () => { /* leave unknown rather than claiming "not bookable" */ }
+      });
+    }
   }
 }

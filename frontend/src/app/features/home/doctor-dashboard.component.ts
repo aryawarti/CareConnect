@@ -58,6 +58,26 @@ import { StatComponent, EmptyStateComponent, ErrorPanelComponent } from '../../s
             </div>
           </div>
         </div>
+      } @else if (hasSchedule() === false) {
+        <!-- The last step of onboarding, and the one nothing used to mention.
+             An approved doctor with no published hours is invisible to booking:
+             they appear in the directory and every date a patient tries comes
+             back empty. This is the prompt that closes that gap. -->
+        <div class="cc-card" style="border-left:4px solid var(--cc-warn);margin-bottom:18px">
+          <div class="cc-row">
+            <mat-icon style="color:var(--cc-warn)">event_busy</mat-icon>
+            <div style="flex:1">
+              <div style="font-weight:600">Publish your consulting hours</div>
+              <div class="cc-muted" style="font-size:14px">
+                You have no weekly schedule, so patients cannot book you on any date.
+                Set the days and times you consult and you will start receiving requests.
+              </div>
+            </div>
+            <a mat-flat-button class="cc-btn-primary" routerLink="/my-schedule">
+              Set my hours
+            </a>
+          </div>
+        </div>
       }
 
       <div class="cc-page-head">
@@ -69,7 +89,10 @@ import { StatComponent, EmptyStateComponent, ErrorPanelComponent } from '../../s
           </div>
         </div>
         <span class="cc-spacer"></span>
-        <a mat-stroked-button routerLink="/schedule"><mat-icon>calendar_month</mat-icon> Schedule</a>
+        <a mat-stroked-button routerLink="/my-schedule">
+          <mat-icon>event_available</mat-icon> My hours
+        </a>
+        <a mat-stroked-button routerLink="/schedule"><mat-icon>calendar_month</mat-icon> Day view</a>
         <a mat-flat-button class="cc-btn-primary" routerLink="/records">
           <mat-icon>clinical_notes</mat-icon> Charts
         </a>
@@ -201,6 +224,8 @@ export class DoctorDashboardComponent {
    * the day shown is incomplete — which a doctor needs told, not hidden.
    */
   readonly loadError = signal<string | null>(null);
+  /** null until known: the prompt must not flash before the answer arrives. */
+  readonly hasSchedule = signal<boolean | null>(null);
   readonly openCharts = computed(() => this.encounters().filter(e => e.status === 'OPEN'));
   readonly signedCount = computed(() =>
     this.encounters().filter(e => e.status !== 'OPEN').length);
@@ -215,6 +240,12 @@ export class DoctorDashboardComponent {
       next: doctor => {
         this.profile.set(doctor);
         this.loadDay(doctor.id);
+        this.providers.availability(doctor.id).subscribe({
+          next: slots => this.hasSchedule.set(slots.length > 0),
+          // Unknown, not "missing": prompting a doctor who already has hours to
+          // set them would be worse than staying quiet.
+          error: () => this.hasSchedule.set(null)
+        });
       },
       error: (err: HttpErrorResponse) => {
         // Only a 404 means "this account has no doctor profile yet". Treating

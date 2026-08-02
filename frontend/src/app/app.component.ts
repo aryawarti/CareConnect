@@ -57,7 +57,10 @@ import { AuthService } from './core/auth/auth.service';
           </mat-menu>
         </div>
       } @else {
-        <a mat-button routerLink="/doctors"><mat-icon>stethoscope</mat-icon> Find a doctor</a>
+        <!-- No "Find a doctor" here: /doctors is behind authGuard, so the link
+             bounced signed-out visitors to the login screen. A public navbar
+             must not advertise a door that is locked. Departments are on the
+             landing page instead, from a genuinely public endpoint. -->
         <a mat-button routerLink="/login">Sign in</a>
         <a mat-flat-button class="cc-btn-primary" routerLink="/register">Register</a>
       }
@@ -97,12 +100,16 @@ export class AppComponent {
         { path: '/', icon: 'dashboard', label: 'My day', exact: true },
         { path: '/queue', icon: 'groups_2', label: 'Live queue' },
         { path: '/records', icon: 'clinical_notes', label: 'Charts' },
+        // The screen that makes a doctor bookable at all. It has to be in the
+        // main navigation, not buried in a profile menu: a doctor who never
+        // finds it is invisible to every patient searching for them.
+        { path: '/my-schedule', icon: 'event_available', label: 'My schedule' },
       ];
     }
     if (isPatient) {
       return [
         { path: '/', icon: 'dashboard', label: 'Dashboard', exact: true },
-        { path: '/doctors', icon: 'stethoscope', label: 'Find a doctor' },
+        { path: '/departments', icon: 'grid_view', label: 'Book a visit' },
         { path: '/my-queue', icon: 'hourglass_top', label: 'My queue' },
         { path: '/my-appointments', icon: 'event', label: 'Appointments' },
         { path: '/my-records', icon: 'clinical_notes', label: 'Records' },

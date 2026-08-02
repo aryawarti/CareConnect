@@ -37,8 +37,12 @@ class ProviderControllerTest {
 
     @Test
     void directoryIsPublic() throws Exception {
-        when(service.directory(any(), any(Pageable.class)))
+        when(service.directory(any(), any(), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(doctor())));
+        // HashMap, not Map.of(): the fixture doctor is unsaved so its id is null,
+        // and an immutable map throws NullPointerException on a null-key get().
+        // A doctor reaching the directory in production always has an id.
+        when(service.workingDaysFor(any())).thenReturn(new java.util.HashMap<>());
 
         mvc.perform(get("/api/providers/directory"))            // no auth headers at all
                 .andExpect(status().isOk())
